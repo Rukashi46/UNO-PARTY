@@ -66,6 +66,7 @@ fun UnoAppRoot(
     when (effectiveScreen) {
         AppScreen.HOME -> {
             HomeScreen(
+                viewModel = viewModel,
                 activeRules = activeRules,
                 onStartGame = { playerCount, mode, rules, roomCode ->
                     viewModel.startMatch(playerCount, mode, rules, roomCode)

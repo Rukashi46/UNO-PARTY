@@ -175,20 +175,6 @@ fun OpponentBadge(
                             fontWeight = FontWeight.Black
                         )
                     }
-                } else if (player.canBePenalizedUno) {
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .background(Color(0xFFD32F2F), CircleShape)
-                            .padding(2.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Warning,
-                            contentDescription = "Forgot UNO",
-                            tint = Color.Yellow,
-                            modifier = Modifier.size(12.dp)
-                        )
-                    }
                 }
             }
 
@@ -221,6 +207,61 @@ fun OpponentBadge(
                         fontWeight = FontWeight.Bold
                     )
                 }
+            }
+
+            // Connection status and host badge
+            if (player.isHost) {
+                Surface(
+                    shape = RoundedCornerShape(4.dp),
+                    color = Color(0xFF2E7D32),
+                    modifier = Modifier.padding(top = 2.dp)
+                ) {
+                    Text(
+                        text = "HOST",
+                        color = Color.White,
+                        fontSize = 8.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                    )
+                }
+            }
+
+            if (player.isReconnecting) {
+                Surface(
+                    shape = RoundedCornerShape(4.dp),
+                    color = Color(0xFFF57C00),
+                    modifier = Modifier.padding(top = 2.dp)
+                ) {
+                    Text(
+                        text = "RECONNECTING",
+                        color = Color.White,
+                        fontSize = 8.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                    )
+                }
+            } else if (!player.isConnected) {
+                Surface(
+                    shape = RoundedCornerShape(4.dp),
+                    color = Color(0xFF757575),
+                    modifier = Modifier.padding(top = 2.dp)
+                ) {
+                    Text(
+                        text = "OFFLINE",
+                        color = Color.White,
+                        fontSize = 8.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                    )
+                }
+            } else if (player.pingMs > 0) {
+                Text(
+                    text = "${player.pingMs}ms",
+                    color = Color(0xFF81C784),
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(top = 1.dp)
+                )
             }
 
             if (isSwapTarget) {
@@ -440,17 +481,6 @@ fun ActionControlsBar(
                 modifier = Modifier.testTag("pass_button")
             ) {
                 Text("End Turn", fontWeight = FontWeight.Bold)
-            }
-        }
-
-        // Catch UNO button if opponent forgot
-        if (catchUnoTarget != null) {
-            Button(
-                onClick = { /* target handled */ },
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE65100)),
-                modifier = Modifier.testTag("catch_uno_button")
-            ) {
-                Text("Catch ${catchUnoTarget.name}!", fontWeight = FontWeight.Black)
             }
         }
 

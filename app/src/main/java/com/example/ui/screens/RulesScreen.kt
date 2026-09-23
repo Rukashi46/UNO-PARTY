@@ -51,6 +51,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.model.GameEndingMode
 import com.example.model.GameRules
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -250,14 +251,65 @@ fun RulesScreen(
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // Section: Custom Wild Cards
-            RulesCategoryCard(title = "⚡ Custom Wild Cards (3× in Deck)") {
+            // Section: Special Cards (3× Custom Wild + 1× Shuffle Hands)
+            RulesCategoryCard(title = "⚡ Special Cards (3× ⚡ + 1× 🔀)") {
                 RuleToggleItem(
-                    title = "Enable Custom Wild Cards (3× ⚡)",
-                    description = "When ON, the deck contains exactly 3 physical Custom Wild cards. When played, the player dynamically chooses between '🔀 Shuffle Hands' and '➕ Everyone +4'.",
+                    title = "Enable Special Cards (4 Cards)",
+                    description = "When ON, the deck contains 3 Custom Wild cards (choose between '➕ Everyone +4' or '🔀 Shuffle Hands') and 1 dedicated Wild Shuffle Hands card.",
                     checked = rules.includeCustomWilds,
                     onCheckedChange = { rules = rules.copy(includeCustomWilds = it) }
                 )
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // Section: Game Ending Mode
+            RulesCategoryCard(title = "🏆 Game Ending Mode") {
+                Text(
+                    text = "Choose when a round concludes:",
+                    color = Color(0xFF94A3B8),
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+
+                GameEndingMode.values().forEach { mode ->
+                    val isSelected = rules.gameEndingMode == mode
+                    Surface(
+                        color = if (isSelected) Color(0x33E53935) else Color(0x11FFFFFF),
+                        shape = RoundedCornerShape(10.dp),
+                        border = if (isSelected) BorderStroke(1.5.dp, Color(0xFFE53935)) else BorderStroke(1.dp, Color(0x22FFFFFF)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = isSelected,
+                                onClick = { rules = rules.copy(gameEndingMode = mode) },
+                                colors = RadioButtonDefaults.colors(selectedColor = Color(0xFFE53935))
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column {
+                                Text(
+                                    text = mode.label,
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp
+                                )
+                                Text(
+                                    text = mode.description,
+                                    color = Color(0xFF94A3B8),
+                                    fontSize = 12.sp
+                                )
+                            }
+                        }
+                    }
+                }
             }
 
             Spacer(modifier = Modifier.height(14.dp))

@@ -14,6 +14,7 @@ import com.example.model.UnoValue
 import com.example.model.isCardPlayable
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -144,14 +145,56 @@ class UnoRuleEngineExactTest {
     }
 
     @Test
-    fun testDeckContainsExactlyThreeCustomWilds() {
+    fun testDeckContainsExactlyThreeCustomWildsAndOneShuffleHands() {
         val deckWithCustom = com.example.engine.UnoDeck.generateDeck(deckCount = 1, includeCustomWilds = true)
         val customWildCount = deckWithCustom.count { it.value == UnoValue.CUSTOM_WILD }
+        val shuffleHandsCount = deckWithCustom.count { it.value == UnoValue.SHUFFLE_HANDS }
         assertEquals("Deck must contain exactly 3 Custom Wild cards", 3, customWildCount)
+        assertEquals("Deck must contain exactly 1 Shuffle Hands card", 1, shuffleHandsCount)
+        assertEquals("Total special cards must be exactly 4", 4, customWildCount + shuffleHandsCount)
 
         val deckWithoutCustom = com.example.engine.UnoDeck.generateDeck(deckCount = 1, includeCustomWilds = false)
-        val zeroCount = deckWithoutCustom.count { it.value == UnoValue.CUSTOM_WILD }
-        assertEquals("Deck without custom wilds must have 0", 0, zeroCount)
+        val zeroCustom = deckWithoutCustom.count { it.value == UnoValue.CUSTOM_WILD }
+        val zeroShuffle = deckWithoutCustom.count { it.value == UnoValue.SHUFFLE_HANDS }
+        assertEquals("Deck without custom wilds must have 0 Custom Wilds", 0, zeroCustom)
+        assertEquals("Deck without custom wilds must have 0 Shuffle Hands", 0, zeroShuffle)
+    }
+
+    @Test
+    fun testDedicatedShuffleHandsCard_PlaysDirectlyWithoutModal() {
+        val top = UnoCard("top", UnoColor.RED, UnoValue.SEVEN)
+        val dedicatedShuffle = UnoCard("sh", UnoColor.WILD, UnoValue.SHUFFLE_HANDS)
+        val c1 = UnoCard("c1", UnoColor.BLUE, UnoValue.ONE)
+        val c2 = UnoCard("c2", UnoColor.GREEN, UnoValue.TWO)
+        val c3 = UnoCard("c3", UnoColor.YELLOW, UnoValue.THREE)
+        val c4 = UnoCard("c4", UnoColor.RED, UnoValue.FOUR)
+
+        val p0 = Player(id = "p0", name = "Player 1", avatar = "🦁", isHuman = true, hand = listOf(dedicatedShuffle, c1, c2)) // 3 cards
+        val p1 = Player(id = "p1", name = "Player 2", avatar = "🦊", isHuman = false, hand = listOf(c3)) // 1 card
+        val p2 = Player(id = "p2", name = "Player 3", avatar = "🐼", isHuman = false, hand = listOf(c4)) // 1 card
+
+        val state = UnoGameState(
+            players = listOf(p0, p1, p2),
+            currentPlayerIndex = 0,
+            drawPile = emptyList(),
+            discardPile = listOf(top),
+            activeColor = UnoColor.RED,
+            gamePhase = GamePhase.PLAYING,
+            rules = rules
+        )
+
+        // Playing dedicated Shuffle Hands immediately triggers Shuffle Hands (NO modal!)
+        val nextState = UnoGameEngine.playCard(state, 0, dedicatedShuffle)
+        assertEquals(GamePhase.PLAYING, nextState.gamePhase)
+        assertNull(nextState.pendingCustomWildCard)
+
+        // Preserves card counts: p0 had 3, played 1 -> 2; p1 has 1; p2 has 1
+        assertEquals(2, nextState.players[0].hand.size)
+        assertEquals(1, nextState.players[1].hand.size)
+        assertEquals(1, nextState.players[2].hand.size)
+
+        // Turn advanced normally to Player 2 (index 1)
+        assertEquals(1, nextState.currentPlayerIndex)
     }
 
     @Test
@@ -196,45 +239,168 @@ class UnoRuleEngineExactTest {
     }
 
     @Test
-    fun testCustomWild_EveryonePlusFourWithStack() {
-        val top = UnoCard("top", UnoColor.RED, UnoValue.DRAW_TWO)
-        val customWild = UnoCard("cw", UnoColor.WILD, UnoValue.CUSTOM_WILD)
+    fun testExample1_CustomWildEveryonePlusFour_StackRemainsIntactAndAccumulates() {
+        // Example 1:
+        // P1 plays +2 -> stack = 2
+        // P2 plays +2 -> stack = 4
+        // P3 plays +4 -> stack = 8
+        // P4 plays Custom Wild ⚡ and selects "Everyone +4"
+        // P5 is the next active player.
+        // Result:
+        // - P5 draws 12 cards = existing stack 8 + Custom Wild 4.
+        // - Every other active player except P4 and P5 draws 4 cards (P1, P2, P3).
+        // - P4, the Custom Wild player, draws 0.
+        // - P5's turn ends after drawing 12.
+        // - Then the next active player (P1) gets a normal turn.
+        // - Clear the stack only after this effect has been fully resolved (pendingDrawStack = 0).
 
-        val p0 = Player(id = "p0", name = "Player 1", avatar = "🦁", isHuman = true, hand = listOf(customWild, UnoCard("extra", UnoColor.BLUE, UnoValue.ONE)))
-        val p1 = Player(id = "p1", name = "Player 2", avatar = "🦊", isHuman = false, hand = emptyList())
-        val p2 = Player(id = "p2", name = "Player 3", avatar = "🐼", isHuman = false, hand = emptyList())
-
-        val drawDeck = (1..30).map { UnoCard("draw_$it", UnoColor.RED, UnoValue.FIVE) }
-
-        val state = UnoGameState(
-            players = listOf(p0, p1, p2),
-            currentPlayerIndex = 0,
-            drawPile = drawDeck,
-            discardPile = listOf(top),
-            activeColor = UnoColor.RED,
-            pendingDrawStack = 2, // Active stack of +2 from previous play!
-            gamePhase = GamePhase.PLAYING,
-            rules = rules
+        val testRules = rules.copy(
+            playerCount = 5,
+            stackingDrawTwos = true,
+            stackingDrawFours = true,
+            stackingDrawFourOnTwo = true,
+            includeCustomWilds = true
         )
 
-        // Player plays Custom Wild
-        val phaseState = UnoGameEngine.playCard(state, 0, customWild)
-        // Select EVERYONE_PLUS_FOUR
-        val resolvedState = UnoGameEngine.completeCustomWildSelection(phaseState, CustomWildEffect.EVERYONE_PLUS_FOUR)
+        val p1Card = UnoCard("c_p1", UnoColor.RED, UnoValue.DRAW_TWO)
+        val p2Card = UnoCard("c_p2", UnoColor.BLUE, UnoValue.DRAW_TWO)
+        val p3Card = UnoCard("c_p3", UnoColor.WILD, UnoValue.WILD_DRAW_FOUR)
+        val p4Card = UnoCard("c_p4", UnoColor.WILD, UnoValue.CUSTOM_WILD)
 
-        // Player 0 (who played it) receives 0 cards: had 2, played 1 -> 1 left
-        assertEquals(1, resolvedState.players[0].hand.size)
+        val p1 = Player(id = "p1", name = "P1", avatar = "🦁", isHuman = false, hand = listOf(p1Card, UnoCard("x1", UnoColor.RED, UnoValue.ONE)))
+        val p2 = Player(id = "p2", name = "P2", avatar = "🦊", isHuman = false, hand = listOf(p2Card, UnoCard("x2", UnoColor.RED, UnoValue.TWO)))
+        val p3 = Player(id = "p3", name = "P3", avatar = "🐼", isHuman = false, hand = listOf(p3Card, UnoCard("x3", UnoColor.RED, UnoValue.THREE)))
+        val p4 = Player(id = "p4", name = "P4", avatar = "🐯", isHuman = false, hand = listOf(p4Card, UnoCard("x4", UnoColor.RED, UnoValue.FOUR)))
+        val p5 = Player(id = "p5", name = "P5", avatar = "🐻", isHuman = false, hand = listOf(UnoCard("x5", UnoColor.RED, UnoValue.FIVE)))
 
-        // Player 1 (next player) absorbs stack: 4 + 2 = 6 cards!
-        assertEquals(6, resolvedState.players[1].hand.size)
+        val drawDeck = (1..60).map { UnoCard("draw_$it", UnoColor.RED, UnoValue.NINE) }
 
-        // Player 2 (other player) receives 4 cards!
-        assertEquals(4, resolvedState.players[2].hand.size)
+        var state = UnoGameState(
+            players = listOf(p1, p2, p3, p4, p5),
+            currentPlayerIndex = 0,
+            drawPile = drawDeck,
+            discardPile = listOf(UnoCard("start", UnoColor.RED, UnoValue.SEVEN)),
+            activeColor = UnoColor.RED,
+            pendingDrawStack = 0,
+            gamePhase = GamePhase.PLAYING,
+            rules = testRules
+        )
 
-        // Stack reset to 0
-        assertEquals(0, resolvedState.pendingDrawStack)
+        // P1 plays Red +2 -> stack = 2
+        state = UnoGameEngine.playCard(state, 0, p1Card)
+        assertEquals(2, state.pendingDrawStack)
+        assertEquals(1, state.currentPlayerIndex)
 
-        // Player 1 absorbed penalty and was skipped, turn advances to Player 2
-        assertEquals(2, resolvedState.currentPlayerIndex)
+        // P2 plays Blue +2 -> stack = 4
+        state = UnoGameEngine.playCard(state, 1, p2Card)
+        assertEquals(4, state.pendingDrawStack)
+        assertEquals(2, state.currentPlayerIndex)
+
+        // P3 plays +4 -> stack = 8
+        state = UnoGameEngine.playCard(state, 2, p3Card, chosenColor = UnoColor.RED)
+        assertEquals(8, state.pendingDrawStack)
+        assertEquals(3, state.currentPlayerIndex)
+
+        // P4 plays Custom Wild ⚡ and selects "Everyone +4"
+        state = UnoGameEngine.playCard(state, 3, p4Card)
+        // If human, completes via completeCustomWildSelection. For bot, engine resolves with EVERYONE_PLUS_FOUR.
+        if (state.gamePhase == GamePhase.CUSTOM_WILD_EFFECT_SELECTION) {
+            state = UnoGameEngine.completeCustomWildSelection(state, CustomWildEffect.EVERYONE_PLUS_FOUR)
+        }
+
+        // Verify exact outcomes:
+        // - P5 draws 12 cards = existing stack 8 + Custom Wild 4.
+        // Initially P5 had 1 card -> 1 + 12 = 13 cards!
+        assertEquals("P5 must draw 12 cards (8 stack + 4 custom wild) -> 13 total", 13, state.players[4].hand.size)
+
+        // - Every other active player except P4 and P5 draws 4 cards (P1, P2, P3).
+        // P1 initially had 2, played 1 -> 1 left + 4 drawn = 5 cards!
+        assertEquals("P1 must receive 4 cards -> 5 total", 5, state.players[0].hand.size)
+        // P2 initially had 2, played 1 -> 1 left + 4 drawn = 5 cards!
+        assertEquals("P2 must receive 4 cards -> 5 total", 5, state.players[1].hand.size)
+        // P3 initially had 2, played 1 -> 1 left + 4 drawn = 5 cards!
+        assertEquals("P3 must receive 4 cards -> 5 total", 5, state.players[2].hand.size)
+
+        // - P4, the Custom Wild player, draws 0.
+        // P4 initially had 2, played 1 -> 1 left + 0 drawn = 1 card!
+        assertEquals("P4 must draw 0 cards -> 1 total", 1, state.players[3].hand.size)
+
+        // - Clear the stack only after this effect has been fully resolved:
+        assertEquals("pendingDrawStack must be 0 after resolution", 0, state.pendingDrawStack)
+
+        // - P5's turn ends after drawing 12. Then the next active player (P1, index 0) gets a normal turn.
+        assertEquals("Turn must advance past P5 to P1 (index 0)", 0, state.currentPlayerIndex)
+    }
+
+    @Test
+    fun testExample2_StackingCalculation_TwoPlusTwoPlusFourPlusFourEqualsTwelve() {
+        // Example 2:
+        // P1 → Red +2 (stack = 2)
+        // P2 → Yellow +2 (stack = 4)
+        // P3 → +4 (stack = 8)
+        // P4 → +4 (stack = 12)
+        // P5 → draws 12 cards.
+        // Stack calculation: 2 + 2 + 4 + 4 = 12
+
+        val testRules = rules.copy(
+            playerCount = 5,
+            stackingDrawTwos = true,
+            stackingDrawFours = true,
+            stackingDrawFourOnTwo = true,
+            includeCustomWilds = true
+        )
+
+        val p1Card = UnoCard("c_p1", UnoColor.RED, UnoValue.DRAW_TWO)
+        val p2Card = UnoCard("c_p2", UnoColor.YELLOW, UnoValue.DRAW_TWO)
+        val p3Card = UnoCard("c_p3", UnoColor.WILD, UnoValue.WILD_DRAW_FOUR)
+        val p4Card = UnoCard("c_p4", UnoColor.WILD, UnoValue.WILD_DRAW_FOUR)
+
+        val p1 = Player(id = "p1", name = "P1", avatar = "🦁", isHuman = false, hand = listOf(p1Card, UnoCard("x1", UnoColor.RED, UnoValue.ONE)))
+        val p2 = Player(id = "p2", name = "P2", avatar = "🦊", isHuman = false, hand = listOf(p2Card, UnoCard("x2", UnoColor.RED, UnoValue.TWO)))
+        val p3 = Player(id = "p3", name = "P3", avatar = "🐼", isHuman = false, hand = listOf(p3Card, UnoCard("x3", UnoColor.RED, UnoValue.THREE)))
+        val p4 = Player(id = "p4", name = "P4", avatar = "🐯", isHuman = false, hand = listOf(p4Card, UnoCard("x4", UnoColor.RED, UnoValue.FOUR)))
+        // P5 has NO +2, +4, or Custom Wild, so P5 cannot stack
+        val p5 = Player(id = "p5", name = "P5", avatar = "🐻", isHuman = false, hand = listOf(UnoCard("x5", UnoColor.RED, UnoValue.FIVE)))
+
+        val drawDeck = (1..60).map { UnoCard("draw_$it", UnoColor.RED, UnoValue.NINE) }
+
+        var state = UnoGameState(
+            players = listOf(p1, p2, p3, p4, p5),
+            currentPlayerIndex = 0,
+            drawPile = drawDeck,
+            discardPile = listOf(UnoCard("start", UnoColor.RED, UnoValue.SEVEN)),
+            activeColor = UnoColor.RED,
+            pendingDrawStack = 0,
+            gamePhase = GamePhase.PLAYING,
+            rules = testRules
+        )
+
+        // P1 plays Red +2 -> stack = 2
+        state = UnoGameEngine.playCard(state, 0, p1Card)
+        assertEquals(2, state.pendingDrawStack)
+        assertEquals(1, state.currentPlayerIndex)
+
+        // P2 plays Yellow +2 -> stack = 2 + 2 = 4
+        state = UnoGameEngine.playCard(state, 1, p2Card)
+        assertEquals(4, state.pendingDrawStack)
+        assertEquals(2, state.currentPlayerIndex)
+
+        // P3 plays +4 -> stack = 4 + 4 = 8
+        state = UnoGameEngine.playCard(state, 2, p3Card, chosenColor = UnoColor.RED)
+        assertEquals(8, state.pendingDrawStack)
+        assertEquals(3, state.currentPlayerIndex)
+
+        // P4 plays +4 -> stack = 8 + 4 = 12
+        // Since P5 cannot stack, P5 immediately absorbs the entire 12-card stack!
+        state = UnoGameEngine.playCard(state, 3, p4Card, chosenColor = UnoColor.RED)
+
+        // P5 had 1 card, drew 12 cards -> 1 + 12 = 13 cards!
+        assertEquals("P5 must draw all 12 stacked cards (2 + 2 + 4 + 4 = 12)", 13, state.players[4].hand.size)
+
+        // Stack reset to 0 after penalty is absorbed
+        assertEquals(0, state.pendingDrawStack)
+
+        // P5's turn was skipped, turn advances to P1 (index 0)
+        assertEquals(0, state.currentPlayerIndex)
     }
 }

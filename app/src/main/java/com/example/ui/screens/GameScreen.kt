@@ -27,12 +27,14 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ElectricBolt
 import androidx.compose.material.icons.filled.FormatListBulleted
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.MenuBook
@@ -41,6 +43,9 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
+import com.example.model.GameEndingMode
+import com.example.ui.components.CardTableArenaView
+import com.example.ui.components.FloatingDrawnPlayableCard
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -68,6 +73,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.engine.UnoGameState
@@ -228,60 +234,75 @@ fun GameScreen(
                 modifier = Modifier.fillMaxSize(),
                 verticalArrangement = Arrangement.SpaceBetween
             ) {
-                // Top Opponents Area
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    OpponentsRow(
-                        players = gameState.players,
-                        currentPlayerIndex = gameState.currentPlayerIndex,
-                        humanIndex = if (gameState.mode == GameMode.SOLO_BOTS) 0 else -1,
-                        onPlayerClicked = { clickedIdx ->
-                            if (gameState.gamePhase == GamePhase.HAND_SWAP_SELECTION) {
-                                onSelectSevenSwapTarget(clickedIdx)
-                            } else {
-                                val p = gameState.players.getOrNull(clickedIdx)
-                                if (p != null && p.canBePenalizedUno) {
-                                    onCatchUno(clickedIdx)
-                                }
-                            }
-                        },
-                        isSwapSelection = gameState.gamePhase == GamePhase.HAND_SWAP_SELECTION
-                    )
-
-                    // Recent ticker alert
-                    gameState.logs.lastOrNull()?.let { lastLog ->
-                        Surface(
-                            color = if (lastLog.isAlert) Color(0xFFE53935).copy(alpha = 0.85f) else Color(0xFF1E293B),
-                            shape = RoundedCornerShape(12.dp),
-                            border = BorderStroke(1.dp, Color(0x33FFFFFF)),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 2.dp)
-                        ) {
-                            Text(
-                                text = lastLog.text,
-                                color = Color.White,
-                                fontSize = 12.sp,
-                                fontWeight = if (lastLog.isAlert) FontWeight.Bold else FontWeight.Normal,
-                                textAlign = TextAlign.Center,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
-                            )
-                        }
-                    }
-                }
-
-                // Center Table: Discard & Draw Piles
-                TableCenterView(
-                    topCard = gameState.topDiscardCard,
-                    drawPileCount = gameState.drawPile.size,
-                    activeColor = gameState.activeColor,
-                    direction = gameState.direction,
-                    pendingDrawStack = gameState.pendingDrawStack,
-                    onDrawClicked = {
-                        if (isMyTurn && gameState.gamePhase == GamePhase.PLAYING) {
-                            onDrawCard()
+                // Persistent Live Players Card Tracker Bar (Shows every player's card count at a glance!)
+                PlayersCardTrackerBar(
+                    players = gameState.players,
+                    currentPlayerIndex = gameState.currentPlayerIndex,
+                    humanIndex = humanIndex,
+                    onPlayerTap = { clickedIdx ->
+                        if (gameState.gamePhase == GamePhase.HAND_SWAP_SELECTION) {
+                            onSelectSevenSwapTarget(clickedIdx)
+                        } else if (clickedIdx != humanIndex) {
+                            onCatchUno(clickedIdx)
                         }
                     }
                 )
+
+                // Recent ticker alert positioned cleanly below tracker bar (NOT covering opponents on the table)
+                gameState.logs.lastOrNull()?.let { lastLog ->
+                    Surface(
+                        color = if (lastLog.isAlert) Color(0xFFE53935).copy(alpha = 0.92f) else Color(0xDD1E293B),
+                        shape = RoundedCornerShape(8.dp),
+                        border = BorderStroke(1.dp, Color(0x33FFFFFF)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 2.dp)
+                    ) {
+                        Text(
+                            text = lastLog.text,
+                            color = Color.White,
+                            fontSize = 11.sp,
+                            fontWeight = if (lastLog.isAlert) FontWeight.Bold else FontWeight.Normal,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+
+                // Arena Card Table Layout (Opponents dynamically distributed around central deck & discard)
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                ) {
+                    CardTableArenaView(
+                        players = gameState.players,
+                        currentPlayerIndex = gameState.currentPlayerIndex,
+                        humanPlayerIndex = if (humanIndex >= 0) humanIndex else 0,
+                        topCard = gameState.topDiscardCard,
+                        drawPileCount = gameState.drawPile.size,
+                        activeColor = gameState.activeColor,
+                        direction = gameState.direction,
+                        pendingDrawStack = gameState.pendingDrawStack,
+                        onDrawClicked = {
+                            if (isMyTurn && gameState.gamePhase == GamePhase.PLAYING) {
+                                onDrawCard()
+                            }
+                        },
+                        onPlayerTap = { clickedIdx ->
+                            if (gameState.gamePhase == GamePhase.HAND_SWAP_SELECTION) {
+                                onSelectSevenSwapTarget(clickedIdx)
+                            }
+                        },
+                        onDoubleTapCatchUno = { targetIdx ->
+                            onCatchUno(targetIdx)
+                        },
+                        isSwapSelection = gameState.gamePhase == GamePhase.HAND_SWAP_SELECTION,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
 
                 // Jump-In Floating Prompt Banner if human can jump in
                 AnimatedVisibility(
@@ -337,23 +358,42 @@ fun GameScreen(
                         onCatchUno = { targetIdx -> onCatchUno(targetIdx) }
                     )
 
-                    // If human drew a playable card this turn, display helpful instruction banner
+                    // If human drew a playable card this turn, display prominent FloatingDrawnPlayableCard!
                     if (isMyTurn && gameState.drawnThisTurn && gameState.cardDrawnThisTurn != null) {
+                        FloatingDrawnPlayableCard(
+                            card = gameState.cardDrawnThisTurn,
+                            onPlay = { onPlayCard(gameState.cardDrawnThisTurn) },
+                            onEndTurn = onPassTurn
+                        )
+                    }
+
+                    // If human drew an UNPLAYABLE card, show clear notice before turn automatically ends
+                    AnimatedVisibility(
+                        visible = isMyTurn && !gameState.drawnThisTurn && gameState.unplayableDrawnNotice != null,
+                        enter = fadeIn() + slideInVertically(),
+                        exit = fadeOut() + slideOutVertically()
+                    ) {
                         Surface(
-                            color = Color(0xFF1E88E5),
-                            shape = RoundedCornerShape(8.dp),
+                            color = Color(0xFFC62828),
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(1.dp, Color(0xFFFF8A80)),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 2.dp)
+                                .padding(horizontal = 16.dp, vertical = 4.dp)
                         ) {
-                            Text(
-                                text = "🎴 Drawn card (${gameState.cardDrawnThisTurn.color.displayName} ${gameState.cardDrawnThisTurn.value.symbol}) is playable! Tap it to play or tap End Turn.",
-                                color = Color.White,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 12.sp,
-                                textAlign = TextAlign.Center,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                            )
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Default.Info, contentDescription = null, tint = Color.White)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "🎴 ${gameState.unplayableDrawnNotice} Added to hand. Ending turn...",
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp
+                                )
+                            }
                         }
                     }
 
@@ -365,11 +405,16 @@ fun GameScreen(
                             onReveal = onTogglePassAndPlayReveal
                         )
                     } else {
-                        // Display Current Player Hand
-                        val playerHand = if (gameState.mode == GameMode.ALL_BOTS) {
+                        // Display Current Player Hand - DO NOT show the playable drawn card in the normal hand row while deciding!
+                        val rawHand = if (gameState.mode == GameMode.ALL_BOTS) {
                             activePlayer?.hand ?: emptyList()
                         } else {
                             humanPlayer?.hand ?: emptyList()
+                        }
+                        val playerHand = if (isMyTurn && gameState.drawnThisTurn && gameState.cardDrawnThisTurn != null) {
+                            rawHand.filter { it.id != gameState.cardDrawnThisTurn.id }
+                        } else {
+                            rawHand
                         }
 
                         Column(modifier = Modifier.fillMaxWidth()) {
@@ -384,15 +429,33 @@ fun GameScreen(
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Text(
                                         text = humanPlayer?.avatar ?: "🦁",
-                                        fontSize = 16.sp
+                                        fontSize = 18.sp
                                     )
                                     Spacer(modifier = Modifier.width(6.dp))
                                     Text(
-                                        text = "${humanPlayer?.name ?: "You"} (${playerHand.size} cards)",
+                                        text = humanPlayer?.name ?: "You",
                                         color = Color.White,
                                         fontWeight = FontWeight.Bold,
-                                        fontSize = 13.sp
+                                        fontSize = 14.sp
                                     )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = when {
+                                            playerHand.size == 1 -> Color(0xFFD32F2F)
+                                            playerHand.size == 2 -> Color(0xFFE65100)
+                                            else -> Color(0xFF2563EB)
+                                        },
+                                        border = BorderStroke(1.dp, if (playerHand.size <= 2) Color(0xFFFFD54F) else Color(0x66FFFFFF))
+                                    ) {
+                                        Text(
+                                            text = "🎴 ${playerHand.size} ${if (playerHand.size == 1) "Card (UNO!)" else "Cards"}",
+                                            color = if (playerHand.size == 1) Color(0xFFFFD54F) else Color.White,
+                                            fontWeight = FontWeight.Black,
+                                            fontSize = 11.5.sp,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                        )
+                                    }
                                 }
 
                                 if (gameState.mode == GameMode.PASS_AND_PLAY) {
@@ -504,12 +567,13 @@ fun GameScreen(
     if (gameState.gamePhase == GamePhase.ROUND_OVER || gameState.gamePhase == GamePhase.MATCH_OVER) {
         val winner = gameState.winner
         val isMatchOver = gameState.gamePhase == GamePhase.MATCH_OVER
+        val isLastPlayerMode = gameState.rules.gameEndingMode == GameEndingMode.PLAY_UNTIL_LAST_PLAYER && gameState.finishingOrder.isNotEmpty()
 
         AlertDialog(
             onDismissRequest = {},
             title = {
                 Text(
-                    text = if (isMatchOver) "🎉 MATCH CHAMPION!" else "🏆 ROUND WINNER!",
+                    text = if (isLastPlayerMode) "🏁 MATCH PLACEMENTS" else if (isMatchOver) "🎉 MATCH CHAMPION!" else "🏆 ROUND WINNER!",
                     fontWeight = FontWeight.Black,
                     textAlign = TextAlign.Center,
                     color = Color(0xFFFFD54F),
@@ -521,38 +585,103 @@ fun GameScreen(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Text(
-                        text = "${winner?.avatar} ${winner?.name ?: "Someone"} WON!",
-                        fontSize = 20.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color.White
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = "Total Score: ${winner?.score ?: 0} pts",
-                        color = Color(0xFF81C784),
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
+                    if (isLastPlayerMode) {
+                        Text(
+                            text = "Placements (Play Until Last Player):",
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF94A3B8),
+                            fontSize = 13.sp
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
 
-                    Spacer(modifier = Modifier.height(14.dp))
-                    Text(
-                        text = "Leaderboard:",
-                        fontWeight = FontWeight.Bold,
-                        color = Color(0xFF94A3B8),
-                        fontSize = 13.sp
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
+                        gameState.finishingOrder.forEachIndexed { idx, p ->
+                            val rankStr = when (idx + 1) {
+                                1 -> "1st 🥇"
+                                2 -> "2nd 🥈"
+                                3 -> "3rd 🥉"
+                                else -> "${idx + 1}th"
+                            }
+                            Surface(
+                                color = if (idx == 0) Color(0x33FFD54F) else Color(0x221E293B),
+                                shape = RoundedCornerShape(8.dp),
+                                border = if (idx == 0) BorderStroke(1.dp, Color(0xFFFFD54F)) else null,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 3.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(
+                                            text = rankStr,
+                                            fontWeight = FontWeight.Black,
+                                            color = if (idx == 0) Color(0xFFFFD54F) else Color.White,
+                                            fontSize = 13.sp
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(
+                                            text = "${p.avatar} ${p.name}",
+                                            color = Color.White,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 13.sp
+                                        )
+                                    }
+                                    if (p.isHuman) {
+                                        Surface(
+                                            color = Color(0xFF1976D2),
+                                            shape = RoundedCornerShape(4.dp)
+                                        ) {
+                                            Text(
+                                                text = "YOU",
+                                                color = Color.White,
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        Text(
+                            text = "${winner?.avatar} ${winner?.name ?: "Someone"} WON!",
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "Total Score: ${winner?.score ?: 0} pts",
+                            color = Color(0xFF81C784),
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
 
-                    gameState.players.sortedByDescending { it.score }.forEach { p ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 2.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(text = "${p.avatar} ${p.name}", color = Color.White, fontSize = 13.sp)
-                            Text(text = "${p.score} pts", color = Color(0xFFFFD54F), fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.height(14.dp))
+                        Text(
+                            text = "Leaderboard:",
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF94A3B8),
+                            fontSize = 13.sp
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+
+                        gameState.players.sortedByDescending { it.score }.forEach { p ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 2.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(text = "${p.avatar} ${p.name}", color = Color.White, fontSize = 13.sp)
+                                Text(text = "${p.score} pts", color = Color(0xFFFFD54F), fontWeight = FontWeight.Bold)
+                            }
                         }
                     }
                 }
@@ -731,5 +860,108 @@ private fun RuleBullet(name: String, value: String) {
     ) {
         Text(text = "• $name:", color = Color(0xFF94A3B8), fontSize = 13.sp)
         Text(text = value, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+    }
+}
+
+/**
+ * Top Players Card Tracker Bar.
+ * Guarantees every player's card count is continuously and clearly visible on any device.
+ */
+@Composable
+private fun PlayersCardTrackerBar(
+    players: List<Player>,
+    currentPlayerIndex: Int,
+    humanIndex: Int,
+    onPlayerTap: (Int) -> Unit
+) {
+    val scrollState = rememberScrollState()
+
+    Surface(
+        color = Color(0xFF0F172A).copy(alpha = 0.95f),
+        border = BorderStroke(0.5.dp, Color(0x33FFFFFF)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("players_card_tracker_bar")
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(scrollState)
+                .padding(horizontal = 10.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            players.forEachIndexed { idx, player ->
+                val isCurrent = idx == currentPlayerIndex
+                val isLocal = idx == humanIndex
+                val isFinished = player.isFinished
+
+                Surface(
+                    color = when {
+                        isFinished -> Color(0x442E7D32)
+                        isCurrent -> Color(0xEE1E293B)
+                        else -> Color(0x991E293B)
+                    },
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(
+                        width = if (isCurrent) 1.5.dp else 1.dp,
+                        color = when {
+                            isCurrent -> Color(0xFFFFD54F)
+                            player.cardCount == 1 && !isFinished -> Color(0xFFE53935)
+                            else -> Color(0x22FFFFFF)
+                        }
+                    ),
+                    modifier = Modifier
+                        .clickable { onPlayerTap(idx) }
+                        .testTag("player_tracker_$idx")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(text = player.avatar, fontSize = 13.sp)
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = if (isLocal) "${player.name} (You)" else player.name,
+                            color = if (isCurrent) Color(0xFFFFD54F) else Color.White,
+                            fontSize = 11.sp,
+                            fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        if (isFinished) {
+                            val rankText = when (player.finishRank) {
+                                1 -> "1st 🥇"
+                                2 -> "2nd 🥈"
+                                3 -> "3rd 🥉"
+                                else -> "Done 🏁"
+                            }
+                            Text(
+                                text = rankText,
+                                color = Color(0xFF81C784),
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        } else {
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = when {
+                                    player.cardCount == 1 -> Color(0xFFD32F2F)
+                                    player.cardCount == 2 -> Color(0xFFE65100)
+                                    else -> Color(0xFF2563EB)
+                                }
+                            ) {
+                                Text(
+                                    text = if (player.cardCount == 1) "🔥 1" else "🎴 ${player.cardCount}",
+                                    color = Color.White,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

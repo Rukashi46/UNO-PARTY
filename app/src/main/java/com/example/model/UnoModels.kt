@@ -26,7 +26,8 @@ enum class UnoValue(val symbol: String, val points: Int, val isAction: Boolean, 
     DRAW_TWO("+2", 20, true, false),
     WILD("★", 50, false, true),
     WILD_DRAW_FOUR("+4", 50, true, true),
-    CUSTOM_WILD("⚡", 50, true, true);
+    CUSTOM_WILD("⚡", 50, true, true),
+    SHUFFLE_HANDS("🔀", 40, true, true);
 
     val isNumber: Boolean get() = this in ZERO..NINE
 }
@@ -113,9 +114,19 @@ data class Player(
     val canBePenalizedUno: Boolean = false,
     val score: Int = 0,
     val isEliminated: Boolean = false,
-    val pingMs: Int = 28
+    val pingMs: Int = 0,
+    val isHost: Boolean = false,
+    val isConnected: Boolean = true,
+    val isReconnecting: Boolean = false,
+    val finishRank: Int? = null
 ) {
     val cardCount: Int get() = hand.size
+    val isFinished: Boolean get() = finishRank != null || isEliminated
+}
+
+enum class GameEndingMode(val label: String, val description: String) {
+    FIRST_PLAYER_WINS("First Player Wins", "End the game when the first player reaches 0 cards."),
+    PLAY_UNTIL_LAST_PLAYER("Play Until Last Player", "Continue until only one active player remains.")
 }
 
 enum class GameMode(val label: String, val description: String) {
@@ -167,7 +178,8 @@ data class GameRules(
     val botSpeedMs: Long = 900L,
     val hapticsEnabled: Boolean = true,
     val soundEnabled: Boolean = true,
-    val includeCustomWilds: Boolean = true
+    val includeCustomWilds: Boolean = true,
+    val gameEndingMode: GameEndingMode = GameEndingMode.FIRST_PLAYER_WINS
 ) {
     companion object {
         val OFFICIAL_RULES = GameRules(

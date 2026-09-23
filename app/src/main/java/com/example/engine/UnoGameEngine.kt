@@ -1,6 +1,7 @@
 package com.example.engine
 
 import com.example.model.CustomWildEffect
+import com.example.model.GameEndingMode
 import com.example.model.GameLogEntry
 import com.example.model.GameMode
 import com.example.model.GamePhase
@@ -33,8 +34,10 @@ data class UnoGameState(
     val pendingSevenPlayerIndex: Int? = null,
     val drawnThisTurn: Boolean = false,
     val cardDrawnThisTurn: UnoCard? = null,
+    val unplayableDrawnNotice: String? = null,
     val passAndPlayHandVisible: Boolean = false,
     val roomCode: String? = null,
+    val finishingOrder: List<Player> = emptyList(),
     val lastActionTimestamp: Long = System.currentTimeMillis()
 ) {
     val topDiscardCard: UnoCard? get() = discardPile.lastOrNull()
@@ -61,7 +64,37 @@ object UnoGameEngine {
         humanPlayerName: String = "You",
         roomCode: String? = null
     ): UnoGameState {
-        val totalPlayers = playerCount.coerceIn(2, 10)
+        val minPlayers = if (mode == GameMode.ONLINE_ROOM || mode == GameMode.WLAN_MULTIPLAYER) 1 else 2
+        val totalPlayers = playerCount.coerceIn(minPlayers, 10)
+
+        if (totalPlayers == 1 && (mode == GameMode.ONLINE_ROOM || mode == GameMode.WLAN_MULTIPLAYER)) {
+            val hostPlayer = Player(
+                id = "player_0",
+                name = humanPlayerName,
+                avatar = UnoDeck.AVATAR_LIST[0],
+                isHuman = true,
+                hand = emptyList(),
+                hasCalledUno = false,
+                canBePenalizedUno = false,
+                pingMs = 0,
+                isHost = true,
+                isConnected = true
+            )
+            return UnoGameState(
+                players = listOf(hostPlayer),
+                currentPlayerIndex = 0,
+                direction = TurnDirection.CLOCKWISE,
+                drawPile = emptyList(),
+                discardPile = emptyList(),
+                activeColor = UnoColor.RED,
+                pendingDrawStack = 0,
+                gamePhase = GamePhase.ROUND_OVER,
+                rules = rules,
+                mode = mode,
+                roomCode = roomCode,
+                logs = listOf(GameLogEntry(text = "Room ${roomCode ?: ""} created. Waiting for players... (1/10)"))
+            )
+        }
         val deckCount = if (totalPlayers >= 7) 2 else 1
         val initialDeck = UnoDeck.generateDeck(deckCount, includeCustomWilds = rules.includeCustomWilds)
 
@@ -69,18 +102,18 @@ object UnoGameEngine {
         for (i in 0 until totalPlayers) {
             val isHuman = when (mode) {
                 GameMode.SOLO_BOTS -> i == 0
-                GameMode.ONLINE_ROOM, GameMode.WLAN_MULTIPLAYER -> i == 0 // In online/WLAN room, Player 0 is local user, others connected
+                GameMode.ONLINE_ROOM, GameMode.WLAN_MULTIPLAYER -> true
                 GameMode.PASS_AND_PLAY -> true
                 GameMode.ALL_BOTS -> false
             }
             val name = when {
-                i == 0 && (mode == GameMode.SOLO_BOTS || mode == GameMode.ONLINE_ROOM || mode == GameMode.WLAN_MULTIPLAYER) -> humanPlayerName
+                i == 0 -> humanPlayerName
                 mode == GameMode.PASS_AND_PLAY -> "Player ${i + 1}"
-                mode == GameMode.ONLINE_ROOM || mode == GameMode.WLAN_MULTIPLAYER -> UnoDeck.ONLINE_USERNAMES[i % UnoDeck.ONLINE_USERNAMES.size]
+                mode == GameMode.ONLINE_ROOM || mode == GameMode.WLAN_MULTIPLAYER -> "Player ${i + 1}"
                 else -> UnoDeck.BOT_NAMES[i % UnoDeck.BOT_NAMES.size]
             }
             val avatar = UnoDeck.AVATAR_LIST[i % UnoDeck.AVATAR_LIST.size]
-            val ping = if (mode == GameMode.ONLINE_ROOM || mode == GameMode.WLAN_MULTIPLAYER) (20 + (i * 7) % 35) else 0
+            val ping = 0
 
             players.add(
                 Player(
@@ -91,10 +124,24 @@ object UnoGameEngine {
                     hand = emptyList(),
                     hasCalledUno = false,
                     canBePenalizedUno = false,
-                    pingMs = ping
+                    pingMs = ping,
+                    isHost = (i == 0)
                 )
             )
         }
+
+        return startNewGameWithPlayers(players, mode, rules, roomCode)
+    }
+
+    fun startNewGameWithPlayers(
+        players: List<Player>,
+        mode: GameMode,
+        rules: GameRules,
+        roomCode: String? = null
+    ): UnoGameState {
+        val totalPlayers = players.size.coerceIn(2, 10)
+        val deckCount = if (totalPlayers >= 7) 2 else 1
+        val initialDeck = UnoDeck.generateDeck(deckCount, includeCustomWilds = rules.includeCustomWilds)
 
         // Deal cards
         val dealtDeck = initialDeck.toMutableList()
@@ -105,12 +152,12 @@ object UnoGameEngine {
                     cards.add(dealtDeck.removeAt(0))
                 }
             }
-            player.copy(hand = cards)
+            player.copy(hand = cards, hasCalledUno = false, canBePenalizedUno = false)
         }
 
-        // Top discard card - ensure it's not a Wild Draw 4 or Custom Wild for clean starting play
+        // Top discard card - ensure it's not a Wild Draw 4, Custom Wild, or Shuffle Hands for clean starting play
         var topCard = dealtDeck.removeAt(0)
-        while (topCard.value == UnoValue.WILD_DRAW_FOUR || topCard.value == UnoValue.CUSTOM_WILD) {
+        while (topCard.value == UnoValue.WILD_DRAW_FOUR || topCard.value == UnoValue.CUSTOM_WILD || topCard.value == UnoValue.SHUFFLE_HANDS) {
             dealtDeck.add(topCard)
             dealtDeck.shuffle()
             topCard = dealtDeck.removeAt(0)
@@ -121,6 +168,8 @@ object UnoGameEngine {
             GameLogEntry(
                 text = if (mode == GameMode.ONLINE_ROOM)
                     "Online match started in room ${roomCode ?: "UNO-LIVE"} with $totalPlayers players!"
+                else if (mode == GameMode.WLAN_MULTIPLAYER)
+                    "WLAN match started with $totalPlayers real players!"
                 else "Game started with $totalPlayers players!"
             ),
             GameLogEntry(
@@ -130,7 +179,7 @@ object UnoGameEngine {
             )
         )
 
-        var state = UnoGameState(
+        val state = UnoGameState(
             players = dealtPlayers,
             currentPlayerIndex = 0,
             direction = TurnDirection.CLOCKWISE,
@@ -146,9 +195,7 @@ object UnoGameEngine {
             passAndPlayHandVisible = mode != GameMode.PASS_AND_PLAY
         )
 
-        // Handle first card action if it's an action card
-        state = handleInitialCardAction(topCard, state)
-        return state
+        return handleInitialCardAction(topCard, state)
     }
 
     private fun handleInitialCardAction(card: UnoCard, state: UnoGameState): UnoGameState {
@@ -217,6 +264,15 @@ object UnoGameEngine {
                 }
                 return executeCustomWildPlay(state, playerIndex, card, botEffect)
             }
+        }
+
+        // Dedicated Shuffle Hands 🔀 handling:
+        // This is a separate dedicated card, NOT a Custom Wild.
+        // Playing it immediately triggers Shuffle Hands.
+        // Do not show the Custom Wild effect-selection modal.
+        // Do not apply Everyone +4.
+        if (card.value == UnoValue.SHUFFLE_HANDS) {
+            return executeDedicatedShuffleHandsPlay(state, playerIndex, card)
         }
 
         // Standard Wild & Wild Draw Four color choice handling
@@ -294,47 +350,31 @@ object UnoGameEngine {
         }
         val newDiscard = state.discardPile + card
 
-        // If player played their last card, handle win immediately
+        // If player played their last card, handle win/finish immediately
         if (newHand.isEmpty()) {
-            val winState = state.copy(
+            val baseState = state.copy(
                 players = basePlayers,
                 discardPile = newDiscard,
                 drawnThisTurn = false,
                 cardDrawnThisTurn = null,
                 logs = state.logs + GameLogEntry(
-                    text = "${player.name} played Custom Wild ⚡ and won the round!",
+                    text = "${player.name} played Custom Wild ⚡ with their last card!",
                     card = card,
                     isAlert = true
                 )
             )
-            return handleRoundWon(winState, updatedPlayer)
+            return if (state.rules.gameEndingMode == GameEndingMode.PLAY_UNTIL_LAST_PLAYER) {
+                handlePlayerFinished(baseState, playerIndex, updatedPlayer)
+            } else {
+                handleRoundWon(baseState, updatedPlayer)
+            }
         }
 
         return when (effect) {
             CustomWildEffect.SHUFFLE_HANDS -> {
                 // Section 5: SHUFFLE HANDS
-                // 1. Collect all cards currently held by every player.
-                // 2. Shuffle those cards.
-                // 3. Redistribute the cards among the same players.
-                // 4. Preserve each player's current card count.
-                // 5. Update all players' hands.
-                // 6. Update all card counts.
-                // 7. Never expose another player's private cards.
-                val targetCounts = basePlayers.map { it.hand.size }
-                val pooledCards = basePlayers.flatMap { it.hand }.shuffled().toMutableList()
-
-                val redistributedPlayers = basePlayers.mapIndexed { idx, p ->
-                    val count = targetCounts[idx]
-                    val assignedHand = mutableListOf<UnoCard>()
-                    for (c in 0 until count) {
-                        assignedHand.add(pooledCards.removeAt(0))
-                    }
-                    p.copy(
-                        hand = assignedHand,
-                        hasCalledUno = false,
-                        canBePenalizedUno = false
-                    )
-                }
+                // Finished players (isEliminated == true) do not participate in Shuffle Hands
+                val redistributedPlayers = performShuffleHandsRedistribution(basePlayers)
 
                 val log = GameLogEntry(
                     text = "⚡ Custom Wild: ${player.name} triggered 🔀 SHUFFLE HANDS! All hands were shuffled and redistributed while preserving card counts!",
@@ -355,13 +395,14 @@ object UnoGameEngine {
             }
 
             CustomWildEffect.EVERYONE_PLUS_FOUR -> {
-                // Section 6 & 7: EVERYONE +4 WITH ACTIVE STACK
-                // Player who played Custom Wild receives 0 cards.
-                // Every other player receives 4 cards.
-                // If there is an active stack (existingStack > 0):
-                // Next player receives existingStack + 4 cards.
-                // Every other player receives 4 cards.
-                // pendingDrawStack is reset to 0 (stacking chain ends).
+                // Critical implementation requirements:
+                // 1. pendingDrawStack must remain intact while resolving Custom Wild → Everyone +4.
+                // 2. Do NOT reset pendingDrawStack before calculating the next player's penalty.
+                // 3. Calculate: nextPlayerPenalty = pendingDrawStack + 4
+                // 4. Apply +4 separately to every other active player.
+                // 5. The Custom Wild player receives no penalty.
+                // 6. Finished players must be excluded in "Play Until Last Player" mode.
+                // 7. After all penalties are applied, set pendingDrawStack = 0.
                 val existingStack = state.pendingDrawStack
                 val nextPlayerIdx = getNextPlayerIndex(state, step = 1)
 
@@ -370,13 +411,13 @@ object UnoGameEngine {
                 val finalPlayers = basePlayers.toMutableList()
 
                 for (i in finalPlayers.indices) {
-                    if (i == playerIndex) {
-                        // User who played Custom Wild receives 0 cards
+                    if (i == playerIndex || finalPlayers[i].isEliminated) {
+                        // User who played Custom Wild or finished players receive 0 cards
                         continue
                     }
 
                     val cardsToDraw = if (i == nextPlayerIdx) {
-                        4 + existingStack
+                        existingStack + 4
                     } else {
                         4
                     }
@@ -418,24 +459,119 @@ object UnoGameEngine {
                     isAlert = true
                 )
 
+                // 7. After all penalties are applied, set pendingDrawStack = 0
                 val newState = state.copy(
                     players = finalPlayers,
                     drawPile = currentDrawPile,
                     discardPile = currentDiscardPile,
                     activeColor = state.activeColor,
-                    pendingDrawStack = 0, // Stacking chain ends!
+                    pendingDrawStack = 0,
                     drawnThisTurn = false,
                     cardDrawnThisTurn = null,
                     logs = state.logs + log
                 )
 
-                if (existingStack > 0) {
-                    // Next player ate the stacked draw penalty and is skipped
-                    advanceTurn(newState, skipNext = true)
-                } else {
-                    // No stack existed; turn advances to next player normally (no skip)
-                    advanceTurn(newState, skipNext = false)
-                }
+                // Next player P5's turn ends after drawing 12 (or 4); then next active player gets a normal turn
+                advanceTurn(newState, skipNext = true)
+            }
+        }
+    }
+
+    /**
+     * Dedicated Shuffle Hands 🔀 card:
+     * - Separate dedicated card, NOT a Custom Wild.
+     * - Immediately triggers Shuffle Hands (no modal, no Everyone +4).
+     * - Collects all cards from active players, shuffles them, and redistributes preserving each player's exact card count.
+     * - In Play Until Last Player mode, excludes finished players.
+     */
+    fun executeDedicatedShuffleHandsPlay(
+        state: UnoGameState,
+        playerIndex: Int,
+        card: UnoCard
+    ): UnoGameState {
+        val player = state.players.getOrNull(playerIndex) ?: return state
+        if (!player.hand.any { it.id == card.id }) return state
+
+        val newHand = player.hand.toMutableList().apply {
+            val idx = indexOfFirst { it.id == card.id }
+            if (idx >= 0) removeAt(idx)
+        }
+
+        val updatedPlayer = player.copy(
+            hand = newHand,
+            canBePenalizedUno = (newHand.size == 1 && !player.hasCalledUno)
+        )
+        val basePlayers = state.players.toMutableList().apply {
+            this[playerIndex] = updatedPlayer
+        }
+        val newDiscard = state.discardPile + card
+
+        if (newHand.isEmpty()) {
+            val baseState = state.copy(
+                players = basePlayers,
+                discardPile = newDiscard,
+                drawnThisTurn = false,
+                cardDrawnThisTurn = null,
+                logs = state.logs + GameLogEntry(
+                    text = "${player.name} played 🔀 Shuffle Hands with their last card!",
+                    card = card,
+                    isAlert = true
+                )
+            )
+            return if (state.rules.gameEndingMode == GameEndingMode.PLAY_UNTIL_LAST_PLAYER) {
+                handlePlayerFinished(baseState, playerIndex, updatedPlayer)
+            } else {
+                handleRoundWon(baseState, updatedPlayer)
+            }
+        }
+
+        val redistributedPlayers = performShuffleHandsRedistribution(basePlayers)
+
+        val log = GameLogEntry(
+            text = "🔀 Shuffle Hands: ${player.name} played Shuffle Hands! All active players' hands were shuffled and redistributed preserving card counts!",
+            card = card,
+            isAlert = true
+        )
+
+        val newState = state.copy(
+            players = redistributedPlayers,
+            discardPile = newDiscard,
+            activeColor = state.activeColor,
+            drawnThisTurn = false,
+            cardDrawnThisTurn = null,
+            logs = state.logs + log
+        )
+        return advanceTurn(newState, skipNext = false)
+    }
+
+    /**
+     * Helper to redistribute cards among active players preserving each player's exact card count.
+     * Finished players (isEliminated == true) do not participate.
+     */
+    private fun performShuffleHandsRedistribution(basePlayers: List<Player>): List<Player> {
+        val activePlayers = basePlayers.filter { !it.isEliminated }
+        val targetCounts = activePlayers.map { it.hand.size }
+        val pooledCards = activePlayers.flatMap { it.hand }.shuffled().toMutableList()
+
+        val redistributedMap = mutableMapOf<String, List<UnoCard>>()
+        activePlayers.forEachIndexed { idx, p ->
+            val count = targetCounts[idx]
+            val assignedHand = mutableListOf<UnoCard>()
+            for (c in 0 until count) {
+                assignedHand.add(pooledCards.removeAt(0))
+            }
+            redistributedMap[p.id] = assignedHand
+        }
+
+        return basePlayers.map { p ->
+            if (p.isEliminated) {
+                p
+            } else {
+                p.copy(
+                    hand = redistributedMap[p.id] ?: emptyList(),
+                    hasCalledUno = false,
+                    canBePenalizedUno = false
+                )
             }
         }
     }
@@ -482,9 +618,13 @@ object UnoGameEngine {
             logs = state.logs + GameLogEntry(text = logText, card = card, color = newActiveColor)
         )
 
-        // Check if player won round
+        // Check if player won round / finished all cards
         if (newHand.isEmpty()) {
-            return handleRoundWon(newState, updatedPlayer)
+            return if (state.rules.gameEndingMode == GameEndingMode.PLAY_UNTIL_LAST_PLAYER) {
+                handlePlayerFinished(newState, playerIndex, updatedPlayer)
+            } else {
+                handleRoundWon(newState, updatedPlayer)
+            }
         }
 
         // Check 7-0 house rule
@@ -516,8 +656,9 @@ object UnoGameEngine {
 
     fun executeSevenSwap(state: UnoGameState, sourceIndex: Int, targetIndex: Int): UnoGameState {
         if (sourceIndex == targetIndex) return state
-        val p1 = state.players[sourceIndex]
-        val p2 = state.players[targetIndex]
+        val p1 = state.players.getOrNull(sourceIndex) ?: return state
+        val p2 = state.players.getOrNull(targetIndex) ?: return state
+        if (p1.isEliminated || p2.isEliminated) return state
 
         val updatedPlayers = state.players.toMutableList().apply {
             this[sourceIndex] = p1.copy(hand = p2.hand, hasCalledUno = false, canBePenalizedUno = false)
@@ -542,17 +683,24 @@ object UnoGameEngine {
     }
 
     private fun executeZeroRotation(state: UnoGameState): UnoGameState {
-        val count = state.players.size
+        val activePlayers = state.players.filter { !it.isEliminated }
+        val count = activePlayers.size
+        if (count <= 1) return state
         val mult = state.direction.multiplier
-        val hands = state.players.map { it.hand }
-
-        val updatedPlayers = state.players.mapIndexed { idx, player ->
+        val activeHands = activePlayers.map { it.hand }
+        val rotatedMap = mutableMapOf<String, List<UnoCard>>()
+        activePlayers.forEachIndexed { idx, p ->
             val sourceIdx = (idx - mult + count) % count
-            player.copy(hand = hands[sourceIdx], hasCalledUno = false, canBePenalizedUno = false)
+            rotatedMap[p.id] = activeHands[sourceIdx]
+        }
+
+        val updatedPlayers = state.players.map { player ->
+            if (player.isEliminated) player
+            else player.copy(hand = rotatedMap[player.id] ?: emptyList(), hasCalledUno = false, canBePenalizedUno = false)
         }
 
         val log = GameLogEntry(
-            text = "🌪️ 0-Rule: All players passed hands ${state.direction.name.lowercase()}!",
+            text = "🌪️ 0-Rule: Active players passed hands ${state.direction.name.lowercase()}!",
             isAlert = true
         )
         return state.copy(players = updatedPlayers, logs = state.logs + log)
@@ -591,11 +739,12 @@ object UnoGameEngine {
                     val nextIdx = getNextPlayerIndex(s, step = 1)
                     val nextPlayer = s.players[nextIdx]
 
-                    // Check if next player can stack
+                    // Check if next player can stack or play Custom Wild
                     val canStack = s.rules.stackingDrawTwos && nextPlayer.hand.any { it.value == UnoValue.DRAW_TWO }
                     val canStackFour = s.rules.stackingDrawFourOnTwo && nextPlayer.hand.any { it.value == UnoValue.WILD_DRAW_FOUR }
+                    val canCustomWild = s.rules.includeCustomWilds && nextPlayer.hand.any { it.value == UnoValue.CUSTOM_WILD }
 
-                    if (canStack || canStackFour) {
+                    if (canStack || canStackFour || canCustomWild) {
                         return advanceTurn(s, skipNext = false)
                     } else {
                         return resolveDrawPenaltyAndAdvance(s, nextIdx, newStack)
@@ -609,8 +758,9 @@ object UnoGameEngine {
                     val nextPlayer = s.players[nextIdx]
 
                     val canStack = s.rules.stackingDrawFours && nextPlayer.hand.any { it.value == UnoValue.WILD_DRAW_FOUR }
+                    val canCustomWild = s.rules.includeCustomWilds && nextPlayer.hand.any { it.value == UnoValue.CUSTOM_WILD }
 
-                    if (canStack) {
+                    if (canStack || canCustomWild) {
                         return advanceTurn(s, skipNext = false)
                     } else {
                         return resolveDrawPenaltyAndAdvance(s, nextIdx, newStack)
@@ -670,7 +820,7 @@ object UnoGameEngine {
      *    - Card remains in hand
      *    - Turn AUTOMATICALLY ends (advances to next player).
      */
-    fun drawCard(state: UnoGameState, playerIndex: Int): UnoGameState {
+    fun drawCard(state: UnoGameState, playerIndex: Int, autoAdvanceIfUnplayable: Boolean = true): UnoGameState {
         if (state.gamePhase != GamePhase.PLAYING) return state
         if (playerIndex != state.currentPlayerIndex) return state
 
@@ -699,6 +849,7 @@ object UnoGameEngine {
             return s.copy(
                 drawnThisTurn = true,
                 cardDrawnThisTurn = drawn,
+                unplayableDrawnNotice = null,
                 logs = s.logs + GameLogEntry(
                     text = "${p.name} drew ${drawn.color.displayName} ${drawn.value.symbol} (Playable! Choose to play or end turn)",
                     card = drawn,
@@ -706,17 +857,18 @@ object UnoGameEngine {
                 )
             )
         } else {
-            // Drawn card is NOT playable: stays in hand, turn automatically ends!
+            // Drawn card is NOT playable: stays in hand
             val nextState = s.copy(
                 drawnThisTurn = false,
                 cardDrawnThisTurn = null,
+                unplayableDrawnNotice = "${drawn.color.displayName} ${drawn.value.symbol} is not playable. Added to hand.",
                 logs = s.logs + GameLogEntry(
                     text = "${p.name} drew ${drawn.color.displayName} ${drawn.value.symbol} (Not playable). Turn ends.",
                     card = drawn,
                     isAlert = false
                 )
             )
-            return advanceTurn(nextState)
+            return if (autoAdvanceIfUnplayable) advanceTurn(nextState) else nextState
         }
     }
 
@@ -754,17 +906,22 @@ object UnoGameEngine {
         val catcher = state.players.getOrNull(catcherIndex) ?: return state
         val target = state.players.getOrNull(targetIndex) ?: return state
 
-        if (!target.canBePenalizedUno || target.hand.size != 1) return state
+        // Validation: Target must have exactly 1 card, must not have called UNO,
+        // must be eligible for penalty, and must not be eliminated.
+        if (!target.canBePenalizedUno || target.hand.size != 1 || target.hasCalledUno || target.isEliminated) {
+            return state
+        }
 
         val penalty = state.rules.unoPenaltyCards
         val (s, _) = drawCardsForPlayer(state, targetIndex, penalty)
+        // Immediately clear canBePenalizedUno so simultaneous challenges cannot stack
         val penalized = s.players[targetIndex].copy(canBePenalizedUno = false, hasCalledUno = false)
         val updatedPlayers = s.players.toMutableList().apply {
             this[targetIndex] = penalized
         }
 
         val entry = GameLogEntry(
-            text = "🚨 ${catcher.name} caught ${target.name} not calling UNO! +$penalty cards penalty!",
+            text = "🚨 Secret UNO Challenge! ${catcher.name} caught ${target.name} without calling UNO! +$penalty cards penalty!",
             isAlert = true
         )
         return s.copy(players = updatedPlayers, logs = state.logs + entry)
@@ -795,17 +952,25 @@ object UnoGameEngine {
         return playCard(stateWithActive, playerIndex, card)
     }
 
-    private fun advanceTurn(state: UnoGameState, skipNext: Boolean = false): UnoGameState {
+    fun advanceTurn(state: UnoGameState, skipNext: Boolean = false): UnoGameState {
         val step = if (skipNext) 2 else 1
         val nextIndex = getNextPlayerIndex(state, step)
 
         val nextPlayer = state.players[nextIndex]
         val isPassAndPlay = state.mode == GameMode.PASS_AND_PLAY
 
+        // Closing the challenge window for any previous player:
+        // Once the next player's turn begins, canBePenalizedUno expires.
+        val updatedPlayers = state.players.map {
+            if (it.canBePenalizedUno) it.copy(canBePenalizedUno = false) else it
+        }
+
         return state.copy(
+            players = updatedPlayers,
             currentPlayerIndex = nextIndex,
             drawnThisTurn = false,
             cardDrawnThisTurn = null,
+            unplayableDrawnNotice = null,
             passAndPlayHandVisible = !isPassAndPlay || !nextPlayer.isHuman,
             lastActionTimestamp = System.currentTimeMillis()
         )
@@ -817,19 +982,100 @@ object UnoGameEngine {
 
     private fun getNextPlayerIndex(state: UnoGameState, step: Int = 1): Int {
         val total = state.players.size
+        if (total == 0) return 0
         val mult = state.direction.multiplier
-        var index = (state.currentPlayerIndex + (step * mult)) % total
-        while (index < 0) {
-            index += total
-        }
-
+        var index = state.currentPlayerIndex
+        var activeSteps = 0
         var guard = 0
-        while (state.players[index].isEliminated && guard < total) {
+        while (activeSteps < step && guard < total * 3) {
             index = (index + mult) % total
             if (index < 0) index += total
+            if (!state.players[index].isEliminated) {
+                activeSteps++
+            }
             guard++
         }
         return index
+    }
+
+    private fun handlePlayerFinished(
+        state: UnoGameState,
+        playerIndex: Int,
+        finishedPlayer: Player
+    ): UnoGameState {
+        val nextRank = state.finishingOrder.size + 1
+        val rankedPlayer = finishedPlayer.copy(
+            finishRank = nextRank,
+            isEliminated = true,
+            hand = emptyList(),
+            canBePenalizedUno = false,
+            hasCalledUno = false
+        )
+        val updatedPlayers = state.players.toMutableList().apply {
+            this[playerIndex] = rankedPlayer
+        }
+        val newFinishingOrder = state.finishingOrder + rankedPlayer
+
+        val activeRemaining = updatedPlayers.filter { !it.isEliminated }
+
+        val rankSuffix = when (nextRank) {
+            1 -> "1st 🥇"
+            2 -> "2nd 🥈"
+            3 -> "3rd 🥉"
+            else -> "${nextRank}th"
+        }
+
+        if (activeRemaining.size <= 1) {
+            // Last remaining player finishes automatically with the final placement
+            val lastActive = activeRemaining.firstOrNull()
+            val finalRank = nextRank + 1
+            val finalPlayers = if (lastActive != null) {
+                val lastRanked = lastActive.copy(
+                    finishRank = finalRank,
+                    isEliminated = true
+                )
+                val lastIdx = updatedPlayers.indexOfFirst { it.id == lastActive.id }
+                if (lastIdx >= 0) updatedPlayers[lastIdx] = lastRanked
+                updatedPlayers
+            } else {
+                updatedPlayers
+            }
+            val completeOrder = if (lastActive != null) {
+                newFinishingOrder + lastActive.copy(finishRank = finalRank, isEliminated = true)
+            } else {
+                newFinishingOrder
+            }
+
+            val gameOverLog = GameLogEntry(
+                text = "🏆 ALL PLAYERS FINISHED! 1st: ${newFinishingOrder.first().name}, Last: ${lastActive?.name ?: ""}",
+                isAlert = true
+            )
+
+            return state.copy(
+                players = finalPlayers,
+                finishingOrder = completeOrder,
+                winner = completeOrder.firstOrNull(),
+                gamePhase = GamePhase.MATCH_OVER,
+                logs = state.logs + GameLogEntry(
+                    text = "🎉 ${finishedPlayer.name} placed $rankSuffix!",
+                    isAlert = true
+                ) + gameOverLog
+            )
+        }
+
+        // Multiple active players still remaining: game continues!
+        val log = GameLogEntry(
+            text = "🎉 ${finishedPlayer.name} finished all cards! Placed $rankSuffix (${activeRemaining.size} active players remaining)",
+            isAlert = true
+        )
+
+        val intermediateState = state.copy(
+            players = updatedPlayers,
+            finishingOrder = newFinishingOrder,
+            logs = state.logs + log
+        )
+
+        return advanceTurn(intermediateState, skipNext = false)
     }
 
     private fun drawCardsForPlayer(

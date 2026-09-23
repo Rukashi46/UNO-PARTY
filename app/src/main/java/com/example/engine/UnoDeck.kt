@@ -39,11 +39,13 @@ object UnoDeck {
             }
         }
 
-        // Add EXACTLY 3 Custom Wild cards (3 × Custom Wild ⚡) to the physical game deck
+        // Add EXACTLY 3 Custom Wild cards (3 × Custom Wild ⚡) and 1 Shuffle Hands (1 × Shuffle Hands 🔀)
+        // Matching official physical card deck: exactly 4 special cards
         if (includeCustomWilds) {
             for (i in 0 until 3) {
                 cards.add(UnoCard(id = UUID.randomUUID().toString(), color = UnoColor.WILD, value = UnoValue.CUSTOM_WILD))
             }
+            cards.add(UnoCard(id = UUID.randomUUID().toString(), color = UnoColor.WILD, value = UnoValue.SHUFFLE_HANDS))
         }
 
         cards.shuffle()
@@ -57,10 +59,5 @@ object UnoDeck {
     val BOT_NAMES = listOf(
         "Leo", "Clever Fox", "Chill Panda", "Fast Tiger", "Big Bear",
         "Cozy Koala", "Mystic Nova", "Eagle Eye", "Alpha Wolf", "Dragon Ace"
-    )
-
-    val ONLINE_USERNAMES = listOf(
-        "Alex_Pro", "CardMaster99", "LuckyAce", "PixelPlayer",
-        "SpeedyUno", "ShadowKing", "CosmicCat", "StarGazer", "NeonRider"
     )
 }

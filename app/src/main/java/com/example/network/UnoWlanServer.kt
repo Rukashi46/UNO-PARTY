@@ -1,0 +1,426 @@
+package com.example.network
+
+import android.util.Log
+import com.example.engine.UnoGameEngine
+import com.example.engine.UnoGameState
+import com.example.model.GameMode
+import com.example.model.GameRules
+import com.example.model.Player
+import com.example.model.UnoCard
+import com.example.model.UnoColor
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.BufferedReader
+import java.io.InputStreamReader
+import java.io.PrintWriter
+import java.net.DatagramPacket
+import java.net.DatagramSocket
+import java.net.Inet4Address
+import java.net.InetAddress
+import java.net.NetworkInterface
+import java.net.ServerSocket
+import java.net.Socket
+import java.util.concurrent.ConcurrentHashMap
+
+class UnoWlanServer(
+    private val scope: CoroutineScope,
+    private val onStateUpdated: (UnoGameState) -> Unit
+) {
+    private val tag = "UnoWlanServer"
+    private var serverSocket: ServerSocket? = null
+    private var udpSocket: DatagramSocket? = null
+    private var acceptJob: Job? = null
+    private var beaconJob: Job? = null
+    private var pingJob: Job? = null
+
+    var currentPort: Int = UnoNetworkProtocol.DEFAULT_PORT
+        private set
+
+    var currentRoomCode: String = "UNO-7777"
+        private set
+
+    var hostName: String = "Host"
+        private set
+
+    private val _connectedPlayers = MutableStateFlow<List<Player>>(emptyList())
+    val connectedPlayers: StateFlow<List<Player>> = _connectedPlayers.asStateFlow()
+
+    private val _isServerRunning = MutableStateFlow(false)
+    val isServerRunning: StateFlow<Boolean> = _isServerRunning.asStateFlow()
+
+    private val clientSockets = ConcurrentHashMap<String, ClientSession>()
+    private var currentGameState: UnoGameState? = null
+
+    data class ClientSession(
+        val socket: Socket,
+        val writer: PrintWriter,
+        val player: Player,
+        var lastPingSent: Long = 0L
+    )
+
+    fun getLocalIpAddress(): String {
+        try {
+            val interfaces = NetworkInterface.getNetworkInterfaces()
+            while (interfaces.hasMoreElements()) {
+                val nIf = interfaces.nextElement()
+                val addresses = nIf.inetAddresses
+                while (addresses.hasMoreElements()) {
+                    val addr = addresses.nextElement()
+                    if (!addr.isLoopbackAddress && addr is Inet4Address) {
+                        val host = addr.hostAddress ?: continue
+                        if (host.startsWith("192.168.") || host.startsWith("10.") || host.startsWith("172.")) {
+                            return host
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(tag, "Failed to get local IP", e)
+        }
+        return "127.0.0.1"
+    }
+
+    fun startServer(
+        roomCode: String,
+        hostPlayer: Player,
+        port: Int = UnoNetworkProtocol.DEFAULT_PORT
+    ) {
+        stopServer()
+        currentRoomCode = roomCode
+        hostName = hostPlayer.name
+        currentPort = port
+
+        val initialHost = hostPlayer.copy(
+            isHost = true,
+            isHuman = true,
+            isConnected = true,
+            isReconnecting = false,
+            pingMs = 0
+        )
+        _connectedPlayers.value = listOf(initialHost)
+        _isServerRunning.value = true
+
+        acceptJob = scope.launch(Dispatchers.IO) {
+            try {
+                serverSocket = ServerSocket(port)
+                Log.d(tag, "WLAN Server listening on port $port")
+
+                startUdpBeacon()
+                startPingLoop()
+
+                while (isActive) {
+                    val socket = serverSocket?.accept() ?: break
+                    launch(Dispatchers.IO) {
+                        handleIncomingConnection(socket)
+                    }
+                }
+            } catch (e: Exception) {
+                if (isActive) {
+                    Log.e(tag, "Server error: ${e.message}")
+                }
+            }
+        }
+    }
+
+    private fun handleIncomingConnection(socket: Socket) {
+        var playerId = ""
+        try {
+            val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
+            val writer = PrintWriter(socket.getOutputStream(), true)
+
+            // Read messages from client
+            var line: String? = reader.readLine()
+            while (line != null) {
+                val json = JSONObject(line)
+                val type = json.getString("type")
+
+                when (type) {
+                    UnoNetworkProtocol.MSG_JOIN_LOBBY -> {
+                        playerId = json.getString("playerId")
+                        val playerName = json.getString("name")
+                        val playerAvatar = json.getString("avatar")
+
+                        val newPlayer = Player(
+                            id = playerId,
+                            name = playerName,
+                            avatar = playerAvatar,
+                            isHuman = true,
+                            isHost = false,
+                            isConnected = true,
+                            isReconnecting = false,
+                            pingMs = 15
+                        )
+
+                        clientSockets[playerId] = ClientSession(socket, writer, newPlayer)
+
+                        // Update players list - only real players
+                        val currentList = _connectedPlayers.value.toMutableList()
+                        val existingIdx = currentList.indexOfFirst { it.id == playerId }
+                        if (existingIdx >= 0) {
+                            currentList[existingIdx] = newPlayer
+                        } else {
+                            currentList.add(newPlayer)
+                        }
+                        _connectedPlayers.value = currentList
+                        broadcastLobbyState()
+                    }
+
+                    UnoNetworkProtocol.MSG_PLAYER_ACTION -> {
+                        handlePlayerAction(json)
+                    }
+
+                    UnoNetworkProtocol.MSG_PONG -> {
+                        val sentTime = json.optLong("timestamp", 0L)
+                        if (sentTime > 0) {
+                            val rtt = (System.currentTimeMillis() - sentTime).toInt().coerceAtLeast(1)
+                            updatePlayerPing(playerId, rtt)
+                        }
+                    }
+
+                    UnoNetworkProtocol.MSG_LEAVE -> {
+                        break
+                    }
+                }
+                line = reader.readLine()
+            }
+        } catch (e: Exception) {
+            Log.d(tag, "Client disconnected: $playerId (${e.message})")
+        } finally {
+            if (playerId.isNotEmpty()) {
+                handleClientDisconnect(playerId)
+            }
+            try { socket.close() } catch (_: Exception) {}
+        }
+    }
+
+    private fun handlePlayerAction(json: JSONObject) {
+        val actionType = json.getString("actionType")
+        val senderId = json.getString("playerId")
+        val state = currentGameState ?: return
+
+        val playerIdx = state.players.indexOfFirst { it.id == senderId }
+        if (playerIdx < 0) return
+
+        var nextState = state
+        when (actionType) {
+            UnoNetworkProtocol.ACTION_PLAY_CARD -> {
+                val cardJson = json.getJSONObject("card")
+                val card = UnoNetworkProtocol.jsonToCard(cardJson)
+                val chosenColor = if (json.has("chosenColor") && !json.isNull("chosenColor")) {
+                    UnoColor.valueOf(json.getString("chosenColor"))
+                } else null
+                nextState = UnoGameEngine.playCard(state, playerIdx, card, chosenColor)
+            }
+            UnoNetworkProtocol.ACTION_DRAW_CARD -> {
+                nextState = UnoGameEngine.drawCard(state, playerIdx)
+            }
+            UnoNetworkProtocol.ACTION_PASS_TURN -> {
+                nextState = UnoGameEngine.passTurn(state, playerIdx)
+            }
+            UnoNetworkProtocol.ACTION_CALL_UNO -> {
+                nextState = UnoGameEngine.callUno(state, playerIdx)
+            }
+            UnoNetworkProtocol.ACTION_CATCH_UNO -> {
+                val targetIndex = json.getInt("targetIndex")
+                nextState = UnoGameEngine.catchUno(state, playerIdx, targetIndex)
+            }
+            UnoNetworkProtocol.ACTION_CHOOSE_COLOR -> {
+                val color = UnoColor.valueOf(json.getString("color"))
+                nextState = UnoGameEngine.completeWildSelection(state, color)
+            }
+            UnoNetworkProtocol.ACTION_CHOOSE_CUSTOM_WILD -> {
+                val effect = com.example.model.CustomWildEffect.valueOf(json.getString("effect"))
+                nextState = UnoGameEngine.completeCustomWildSelection(state, effect)
+            }
+            UnoNetworkProtocol.ACTION_CHOOSE_SEVEN_SWAP -> {
+                val targetIndex = json.getInt("targetIndex")
+                nextState = UnoGameEngine.executeSevenSwap(state, playerIdx, targetIndex)
+            }
+            UnoNetworkProtocol.ACTION_JUMP_IN -> {
+                val cardJson = json.getJSONObject("card")
+                val card = UnoNetworkProtocol.jsonToCard(cardJson)
+                nextState = UnoGameEngine.jumpIn(state, playerIdx, card)
+            }
+        }
+
+        currentGameState = nextState
+        scope.launch(Dispatchers.Main) {
+            onStateUpdated(nextState)
+        }
+        broadcastGameState(nextState)
+    }
+
+    private fun handleClientDisconnect(playerId: String) {
+        clientSockets.remove(playerId)
+        val gameState = currentGameState
+
+        if (gameState == null) {
+            // Still in lobby: remove player completely
+            _connectedPlayers.value = _connectedPlayers.value.filter { it.id != playerId }
+            broadcastLobbyState()
+        } else {
+            // During active game: mark player as disconnected / reconnecting (DO NOT replace with bot)
+            val updatedPlayers = gameState.players.map {
+                if (it.id == playerId) it.copy(isConnected = false, isReconnecting = true) else it
+            }
+            val updatedState = gameState.copy(players = updatedPlayers)
+            currentGameState = updatedState
+            scope.launch(Dispatchers.Main) {
+                onStateUpdated(updatedState)
+            }
+            broadcastGameState(updatedState)
+        }
+    }
+
+    private fun updatePlayerPing(playerId: String, ping: Int) {
+        _connectedPlayers.value = _connectedPlayers.value.map {
+            if (it.id == playerId) it.copy(pingMs = ping) else it
+        }
+        currentGameState?.let { state ->
+            val updatedPlayers = state.players.map {
+                if (it.id == playerId) it.copy(pingMs = ping) else it
+            }
+            val updated = state.copy(players = updatedPlayers)
+            currentGameState = updated
+            scope.launch(Dispatchers.Main) {
+                onStateUpdated(updated)
+            }
+        }
+    }
+
+    fun broadcastLobbyState() {
+        val json = JSONObject().apply {
+            put("type", UnoNetworkProtocol.MSG_LOBBY_UPDATE)
+            put("roomCode", currentRoomCode)
+            put("hostIp", getLocalIpAddress())
+            put("port", currentPort)
+            val playersArr = JSONArray()
+            _connectedPlayers.value.forEach { playersArr.put(UnoNetworkProtocol.playerToJson(it)) }
+            put("players", playersArr)
+            put("canStart", _connectedPlayers.value.size >= 2)
+        }
+        sendToAllClients(json.toString())
+    }
+
+    fun startGame(rules: GameRules, mode: GameMode): UnoGameState? {
+        val players = _connectedPlayers.value
+        if (players.size < 2) return null
+
+        val initialState = UnoGameEngine.startNewGameWithPlayers(
+            players = players,
+            mode = mode,
+            rules = rules,
+            roomCode = currentRoomCode
+        )
+
+        currentGameState = initialState
+        scope.launch(Dispatchers.Main) {
+            onStateUpdated(initialState)
+        }
+
+        // Broadcast START_GAME to all clients
+        val json = JSONObject().apply {
+            put("type", UnoNetworkProtocol.MSG_START_GAME)
+            put("gameState", UnoNetworkProtocol.stateToJson(initialState))
+        }
+        sendToAllClients(json.toString())
+
+        return initialState
+    }
+
+    fun updateAndBroadcastHostState(state: UnoGameState) {
+        currentGameState = state
+        broadcastGameState(state)
+    }
+
+    fun broadcastGameState(state: UnoGameState) {
+        val json = JSONObject().apply {
+            put("type", UnoNetworkProtocol.MSG_SYNC_STATE)
+            put("gameState", UnoNetworkProtocol.stateToJson(state))
+        }
+        sendToAllClients(json.toString())
+    }
+
+    private fun sendToAllClients(msg: String) {
+        scope.launch(Dispatchers.IO) {
+            clientSockets.values.forEach { session ->
+                try {
+                    session.writer.println(msg)
+                } catch (e: Exception) {
+                    Log.e(tag, "Failed to send to client: ${e.message}")
+                }
+            }
+        }
+    }
+
+    private fun startUdpBeacon() {
+        beaconJob?.cancel()
+        beaconJob = scope.launch(Dispatchers.IO) {
+            try {
+                udpSocket = DatagramSocket()
+                udpSocket?.broadcast = true
+                val broadcastAddr = InetAddress.getByName("255.255.255.255")
+
+                while (isActive) {
+                    val message = "UNO_ROOM|$currentRoomCode|$hostName|${getLocalIpAddress()}|$currentPort|${_connectedPlayers.value.size}"
+                    val bytes = message.toByteArray()
+                    val packet = DatagramPacket(bytes, bytes.size, broadcastAddr, UnoNetworkProtocol.UDP_DISCOVERY_PORT)
+                    udpSocket?.send(packet)
+                    delay(1500)
+                }
+            } catch (e: Exception) {
+                if (isActive) Log.e(tag, "UDP Beacon error: ${e.message}")
+            }
+        }
+    }
+
+    private fun startPingLoop() {
+        pingJob?.cancel()
+        pingJob = scope.launch(Dispatchers.IO) {
+            while (isActive) {
+                delay(3000)
+                val now = System.currentTimeMillis()
+                clientSockets.values.forEach { session ->
+                    session.lastPingSent = now
+                    try {
+                        val pingMsg = JSONObject().apply {
+                            put("type", UnoNetworkProtocol.MSG_PING)
+                            put("timestamp", now)
+                        }
+                        session.writer.println(pingMsg.toString())
+                    } catch (_: Exception) {}
+                }
+            }
+        }
+    }
+
+    fun stopServer() {
+        acceptJob?.cancel()
+        beaconJob?.cancel()
+        pingJob?.cancel()
+
+        try {
+            clientSockets.values.forEach { it.socket.close() }
+            clientSockets.clear()
+        } catch (_: Exception) {}
+
+        try { serverSocket?.close() } catch (_: Exception) {}
+        try { udpSocket?.close() } catch (_: Exception) {}
+
+        serverSocket = null
+        udpSocket = null
+        currentGameState = null
+        _isServerRunning.value = false
+        _connectedPlayers.value = emptyList()
+    }
+}

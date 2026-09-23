@@ -63,7 +63,7 @@ fun UnoCardView(
     )
 
     val borderStroke = when {
-        card.value == UnoValue.CUSTOM_WILD -> BorderStroke(2.5.dp, Color(0xFFFFD54F))
+        card.value == UnoValue.CUSTOM_WILD || card.value == UnoValue.SHUFFLE_HANDS -> BorderStroke(2.5.dp, Color(0xFFFFD54F))
         isSelected -> BorderStroke(2.5.dp, Color(0xFFFFD700))
         isPlayable -> BorderStroke(1.5.dp, Color.White)
         else -> BorderStroke(1.dp, Color(0x66FFFFFF))
