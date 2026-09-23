@@ -684,7 +684,7 @@ private fun HeaderHeroBanner() {
             )
             Spacer(modifier = Modifier.width(8.dp))
             Text(
-                text = "ONLINE",
+                text = "PARTY",
                 fontSize = 38.sp,
                 fontWeight = FontWeight.Black,
                 color = Color(0xFFE53935),
@@ -699,7 +699,7 @@ private fun HeaderHeroBanner() {
             border = BorderStroke(1.dp, Color(0x44FFFFFF))
         ) {
             Text(
-                text = "2 to 10 Players • Online Multiplayer & Custom Wilds",
+                text = "2 to 10 Players • Party Card Game & Custom Wilds",
                 color = Color(0xFF94A3B8),
                 fontSize = 12.sp,
                 fontWeight = FontWeight.SemiBold,
