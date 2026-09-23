@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    
+    <!-- Yellow Card Left Tilt -->
+    <group
+        android:pivotX="45"
+        android:pivotY="54"
+        android:rotation="-22">
+        <path
+            android:fillColor="#FBC02D"
+            android:pathData="M32,30 h26 a6,6 0 0 1 6,6 v36 a6,6 0 0 1 -6,6 h-26 a6,6 0 0 1 -6,-6 v-36 a6,6 0 0 1 6,-6 z" />
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M34,32 h22 a4,4 0 0 1 4,4 v32 a4,4 0 0 1 -4,4 h-22 a4,4 0 0 1 -4,-4 v-32 a4,4 0 0 1 4,-4 z" />
+        <path
+            android:fillColor="#FBC02D"
+            android:pathData="M36,34 h18 a3,3 0 0 1 3,3 v28 a3,3 0 0 1 -3,3 h-18 a3,3 0 0 1 -3,-3 v-28 a3,3 0 0 1 3,-3 z" />
+    </group>
+
+    <!-- Green Card Right Tilt -->
+    <group
+        android:pivotX="63"
+        android:pivotY="54"
+        android:rotation="22">
+        <path
+            android:fillColor="#388E3C"
+            android:pathData="M50,30 h26 a6,6 0 0 1 6,6 v36 a6,6 0 0 1 -6,6 h-26 a6,6 0 0 1 -6,-6 v-36 a6,6 0 0 1 6,-6 z" />
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M52,32 h22 a4,4 0 0 1 4,4 v32 a4,4 0 0 1 -4,4 h-22 a4,4 0 0 1 -4,-4 v-32 a4,4 0 0 1 4,-4 z" />
+        <path
+            android:fillColor="#388E3C"
+            android:pathData="M54,34 h18 a3,3 0 0 1 3,3 v28 a3,3 0 0 1 -3,3 h-18 a3,3 0 0 1 -3,-3 v-28 a3,3 0 0 1 3,-3 z" />
+    </group>
+
+    <!-- Center Red Card with UNO emblem -->
+    <group
+        android:pivotX="54"
+        android:pivotY="54"
+        android:rotation="-4">
+        <!-- Drop shadow -->
+        <path
+            android:fillColor="#40000000"
+            android:pathData="M40,29 h30 a6,6 0 0 1 6,6 v42 a6,6 0 0 1 -6,6 h-30 a6,6 0 0 1 -6,-6 v-42 a6,6 0 0 1 6,-6 z" />
+        <!-- Red Body -->
+        <path
+            android:fillColor="#D32F2F"
+            android:pathData="M39,27 h30 a6,6 0 0 1 6,6 v42 a6,6 0 0 1 -6,6 h-30 a6,6 0 0 1 -6,-6 v-42 a6,6 0 0 1 6,-6 z" />
+        <!-- White Border -->
+        <path
+            android:strokeColor="#FFFFFF"
+            android:strokeWidth="1.5"
+            android:fillColor="#00000000"
+            android:pathData="M42,30 h24 a4,4 0 0 1 4,4 v36 a4,4 0 0 1 -4,4 h-24 a4,4 0 0 1 -4,-4 v-36 a4,4 0 0 1 4,-4 z" />
+        <!-- White Oval Center -->
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M44,48 C44,42 64,40 64,54 C64,66 44,64 44,48 Z" />
+        <!-- Red center inside oval -->
+        <path
+            android:fillColor="#D32F2F"
+            android:pathData="M46,48 C46,43.5 62,42 62,54 C62,64 46,62.5 46,48 Z" />
+        <!-- UNO Yellow Bold Emblem -->
+        <!-- 'U' -->
+        <path
+            android:fillColor="#FFEB3B"
+            android:pathData="M48,46 h2 v6 a2,2 0 0 1 -2,2 a2,2 0 0 1 -2,-2 v-6 h2 v6 h0 z" />
+        <!-- 'N' -->
+        <path
+            android:fillColor="#FFEB3B"
+            android:pathData="M52,46 h1.8 l2,5.5 v-5.5 h1.8 v8 h-1.8 l-2,-5.5 v5.5 h-1.8 z" />
+        <!-- 'O' -->
+        <path
+            android:fillColor="#FFEB3B"
+            android:pathData="M60,46 a4,4 0 0 1 4,4 v0 a4,4 0 0 1 -4,4 a4,4 0 0 1 -4,-4 v0 a4,4 0 0 1 4,-4 z" />
+        <path
+            android:fillColor="#D32F2F"
+            android:pathData="M60,48 a2,2 0 0 1 2,2 v0 a2,2 0 0 1 -2,2 a2,2 0 0 1 -2,-2 v0 a2,2 0 0 1 2,-2 z" />
+        <!-- Corner '1' marks -->
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M41,31 h1.5 v4 h-1.5 z" />
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M65.5,67 h1.5 v4 h-1.5 z" />
+    </group>
+
+    <!-- Wild 4-color mini badge floating bottom right -->
+    <group android:pivotX="78" android:pivotY="70">
+        <!-- Wild circle border -->
+        <path
+            android:fillColor="#212121"
+            android:pathData="M78,70m-9,0a9,9 0 1,0 18,0a9,9 0 1,0 -18,0" />
+        <!-- Red quarter -->
+        <path
+            android:fillColor="#E53935"
+            android:pathData="M78,70 L78,63 A7,7 0 0,1 85,70 Z" />
+        <!-- Blue quarter -->
+        <path
+            android:fillColor="#1E88E5"
+            android:pathData="M78,70 L85,70 A7,7 0 0,1 78,77 Z" />
+        <!-- Green quarter -->
+        <path
+            android:fillColor="#43A047"
+            android:pathData="M78,70 L78,77 A7,7 0 0,1 71,70 Z" />
+        <!-- Yellow quarter -->
+        <path
+            android:fillColor="#FDD835"
+            android:pathData="M78,70 L71,70 A7,7 0 0,1 78,63 Z" />
+    </group>
+</vector>

@@ -1,0 +1,6 @@
+{
+  "name": "Uno Party",
+  "description": "Exciting 2-10 player Uno card game featuring customizable house rules, bots, pass & play, quick actions, and match score tracking.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
