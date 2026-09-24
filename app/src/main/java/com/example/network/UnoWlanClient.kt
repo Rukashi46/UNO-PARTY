@@ -22,6 +22,7 @@ import java.io.InputStreamReader
 import java.io.PrintWriter
 import java.net.DatagramPacket
 import java.net.DatagramSocket
+import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
 
@@ -49,6 +50,12 @@ class UnoWlanClient(
     private val _isConnected = MutableStateFlow(false)
     val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
 
+    private val _connectionStatus = MutableStateFlow(UnoNetworkProtocol.ConnectionStatus.DISCONNECTED)
+    val connectionStatus: StateFlow<UnoNetworkProtocol.ConnectionStatus> = _connectionStatus.asStateFlow()
+
+    private val _errorMessage = MutableStateFlow<String?>(null)
+    val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
+
     private val _isReconnecting = MutableStateFlow(false)
     val isReconnecting: StateFlow<Boolean> = _isReconnecting.asStateFlow()
 
@@ -64,6 +71,7 @@ class UnoWlanClient(
     private var localPlayer: Player? = null
     private var lastHostIp: String = ""
     private var lastPort: Int = UnoNetworkProtocol.DEFAULT_PORT
+    private var targetRoomCode: String = ""
 
     fun startDiscovery() {
         discoveryJob?.cancel()
@@ -79,7 +87,7 @@ class UnoWlanClient(
                 while (isActive) {
                     val packet = DatagramPacket(buffer, buffer.size)
                     udpSocket.receive(packet)
-                    val message = String(packet.data, 0, packet.length)
+                    val message = String(packet.data, 0, packet.length).trim()
 
                     if (message.startsWith("UNO_ROOM|")) {
                         val parts = message.split("|")
@@ -113,30 +121,37 @@ class UnoWlanClient(
         _discoveredRooms.value = emptyList()
     }
 
-    fun connectToHost(hostIp: String, port: Int = UnoNetworkProtocol.DEFAULT_PORT, player: Player) {
+    fun connectToHost(hostIp: String, port: Int = UnoNetworkProtocol.DEFAULT_PORT, player: Player, roomCode: String = "") {
         disconnect()
         localPlayer = player
         lastHostIp = hostIp
         lastPort = port
+        targetRoomCode = roomCode
+        _errorMessage.value = null
+        _connectionStatus.value = UnoNetworkProtocol.ConnectionStatus.CONNECTING
 
         receiveJob = scope.launch(Dispatchers.IO) {
             try {
-                Log.d(tag, "Connecting to host at $hostIp:$port...")
+                Log.d(tag, "[NETWORK] connecting to $hostIp:$port...")
                 val sock = Socket()
-                sock.connect(InetSocketAddress(hostIp, port), 5000)
+                sock.connect(InetSocketAddress(hostIp, port), 4500)
                 socket = sock
                 writer = PrintWriter(sock.getOutputStream(), true)
                 reader = BufferedReader(InputStreamReader(sock.getInputStream()))
 
-                _isConnected.value = true
-                _isReconnecting.value = false
+                Log.d(tag, "[NETWORK] connected socketId=${sock.remoteSocketAddress}")
+                _connectionStatus.value = UnoNetworkProtocol.ConnectionStatus.CONNECTED
 
                 // Send join request
+                Log.d(tag, "[ROOM] joining $roomCode (playerId=${player.id}, username=${player.name})")
+                _connectionStatus.value = UnoNetworkProtocol.ConnectionStatus.JOINING
+
                 val joinMsg = JSONObject().apply {
-                    put("type", UnoNetworkProtocol.MSG_JOIN_LOBBY)
+                    put("type", UnoNetworkProtocol.MSG_JOIN_REQUEST)
                     put("playerId", player.id)
                     put("name", player.name)
                     put("avatar", player.avatar)
+                    put("roomCode", roomCode)
                 }
                 writer?.println(joinMsg.toString())
 
@@ -147,15 +162,39 @@ class UnoWlanClient(
                     val type = json.getString("type")
 
                     when (type) {
+                        UnoNetworkProtocol.MSG_JOIN_ACCEPTED -> {
+                            Log.d(tag, "[ROOM] join accepted")
+                            _connectionStatus.value = UnoNetworkProtocol.ConnectionStatus.JOINED
+                            _isConnected.value = true
+                            _isReconnecting.value = false
+                            _errorMessage.value = null
+                            val acceptedRoom = json.optString("roomCode", roomCode)
+                            _currentRoomCode.value = acceptedRoom
+                        }
+
+                        UnoNetworkProtocol.MSG_JOIN_REJECTED -> {
+                            val reason = json.optString("reason", UnoNetworkProtocol.ERR_SOCKET_CONNECTION_FAILED)
+                            val message = json.optString("message", reason)
+                            Log.w(tag, "[ROOM] join rejected reason=$reason ($message)")
+                            _connectionStatus.value = UnoNetworkProtocol.ConnectionStatus.ERROR
+                            _errorMessage.value = "$reason: $message"
+                            _isConnected.value = false
+                            return@launch
+                        }
+
                         UnoNetworkProtocol.MSG_LOBBY_UPDATE -> {
-                            val roomCode = json.optString("roomCode", "")
-                            _currentRoomCode.value = roomCode
+                            val receivedRoom = json.optString("roomCode", "")
+                            if (receivedRoom.isNotEmpty()) _currentRoomCode.value = receivedRoom
                             val playersArr = json.getJSONArray("players")
                             val players = mutableListOf<Player>()
                             for (i in 0 until playersArr.length()) {
                                 players.add(UnoNetworkProtocol.jsonToPlayer(playersArr.getJSONObject(i)))
                             }
                             _lobbyPlayers.value = players
+                            _connectionStatus.value = UnoNetworkProtocol.ConnectionStatus.JOINED
+                            _isConnected.value = true
+                            Log.d(tag, "[ROOM] room state received")
+                            Log.d(tag, "[ROOM] players = ${players.map { it.name }}")
                         }
 
                         UnoNetworkProtocol.MSG_START_GAME -> {
@@ -185,10 +224,18 @@ class UnoWlanClient(
                     }
                 }
             } catch (e: Exception) {
-                Log.e(tag, "Connection error: ${e.message}")
+                val errCode = when (e) {
+                    is java.net.ConnectException -> UnoNetworkProtocol.ERR_SERVER_UNREACHABLE
+                    is java.net.SocketTimeoutException -> UnoNetworkProtocol.ERR_JOIN_TIMEOUT
+                    is java.net.UnknownHostException -> UnoNetworkProtocol.ERR_NETWORK_UNREACHABLE
+                    else -> UnoNetworkProtocol.ERR_SOCKET_CONNECTION_FAILED
+                }
+                Log.e(tag, "[ROOM] join rejected reason=$errCode (${e.message})")
+                _connectionStatus.value = UnoNetworkProtocol.ConnectionStatus.ERROR
+                _errorMessage.value = "$errCode: Could not reach host at $hostIp:$port"
             } finally {
                 _isConnected.value = false
-                if (isActive && lastHostIp.isNotEmpty()) {
+                if (isActive && lastHostIp.isNotEmpty() && _connectionStatus.value != UnoNetworkProtocol.ConnectionStatus.ERROR) {
                     triggerReconnect()
                 }
             }
@@ -234,6 +281,69 @@ class UnoWlanClient(
         }
     }
 
+    fun resolveAndConnect(input: String, player: Player) {
+        val trimmed = input.trim()
+        if (trimmed.isEmpty()) {
+            _connectionStatus.value = UnoNetworkProtocol.ConnectionStatus.ERROR
+            _errorMessage.value = "${UnoNetworkProtocol.ERR_INVALID_ROOM_CODE}: Please enter a room code or IP address"
+            return
+        }
+
+        // 1. Direct IP or Encoded Base36 IP check
+        val decoded = RoomCodeUtil.decodeRoomCodeToIp(trimmed)
+        if (decoded != null) {
+            val (ip, port) = decoded
+            connectToHost(ip, port, player, trimmed)
+            return
+        }
+
+        // 2. Search active discovered rooms on local Wi-Fi
+        val cleanInput = trimmed.removePrefix("WLAN-").removePrefix("UNO-").removePrefix("ONLINE-")
+        val match = _discoveredRooms.value.firstOrNull { room ->
+            val cleanRoom = room.roomCode.removePrefix("WLAN-").removePrefix("UNO-").removePrefix("ONLINE-")
+            cleanRoom.equals(cleanInput, ignoreCase = true) || room.roomCode.equals(trimmed, ignoreCase = true)
+        }
+        if (match != null) {
+            connectToHost(match.hostIp, match.port, player, match.roomCode)
+            return
+        }
+
+        // 3. Active UDP Query across local broadcast
+        _connectionStatus.value = UnoNetworkProtocol.ConnectionStatus.CONNECTING
+        scope.launch(Dispatchers.IO) {
+            try {
+                val querySocket = DatagramSocket()
+                querySocket.broadcast = true
+                querySocket.soTimeout = 1200
+                val broadcastAddr = InetAddress.getByName("255.255.255.255")
+                val queryMsg = "UNO_FIND_ROOM|$trimmed"
+                val qBytes = queryMsg.toByteArray()
+                val qPacket = DatagramPacket(qBytes, qBytes.size, broadcastAddr, UnoNetworkProtocol.UDP_DISCOVERY_PORT)
+                querySocket.send(qPacket)
+
+                val rcvBuf = ByteArray(1024)
+                val rcvPacket = DatagramPacket(rcvBuf, rcvBuf.size)
+                querySocket.receive(rcvPacket)
+                val respMsg = String(rcvPacket.data, 0, rcvPacket.length).trim()
+                querySocket.close()
+
+                if (respMsg.startsWith("UNO_ROOM|")) {
+                    val parts = respMsg.split("|")
+                    if (parts.size >= 5) {
+                        val hostIp = parts[3]
+                        val port = parts[4].toIntOrNull() ?: UnoNetworkProtocol.DEFAULT_PORT
+                        connectToHost(hostIp, port, player, trimmed)
+                        return@launch
+                    }
+                }
+            } catch (_: Exception) {}
+
+            // Failed to find room
+            _connectionStatus.value = UnoNetworkProtocol.ConnectionStatus.ERROR
+            _errorMessage.value = "${UnoNetworkProtocol.ERR_ROOM_NOT_FOUND}: Could not find room '$trimmed' on Wi-Fi. Ensure both devices are on the same Wi-Fi/Hotspot or use the host's IP address."
+        }
+    }
+
     fun disconnect() {
         receiveJob?.cancel()
         receiveJob = null
@@ -249,5 +359,7 @@ class UnoWlanClient(
         _isConnected.value = false
         _isReconnecting.value = false
         _lobbyPlayers.value = emptyList()
+        _connectionStatus.value = UnoNetworkProtocol.ConnectionStatus.DISCONNECTED
+        _errorMessage.value = null
     }
 }

@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ElectricBolt
 import androidx.compose.material.icons.filled.Group
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Leaderboard
 import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.Person
@@ -38,6 +39,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
@@ -95,7 +97,7 @@ fun HomeScreen(
     var selectedMode by remember { mutableStateOf(GameMode.ONLINE_ROOM) }
     var selectedPresetName by remember { mutableStateOf("Spicy House Rules") }
     var currentRules by remember(activeRules) { mutableStateOf(activeRules) }
-    var roomCode by remember { mutableStateOf("UNO-${(1000..9999).random()}") }
+    var roomCode by remember { mutableStateOf("") }
     var onlineTabIndex by remember { mutableIntStateOf(0) } // 0: Host Room, 1: Join Room
 
     val clipboardManager = LocalClipboardManager.current
@@ -103,14 +105,24 @@ fun HomeScreen(
     val hostIpAddress by viewModel.hostIpAddress.collectAsStateWithLifecycle()
     val discoveredRooms by viewModel.discoveredRooms.collectAsStateWithLifecycle()
     val isClientConnected by viewModel.isClientConnected.collectAsStateWithLifecycle()
+    val connectionStatus by viewModel.connectionStatus.collectAsStateWithLifecycle()
+    val networkErrorMessage by viewModel.networkErrorMessage.collectAsStateWithLifecycle()
     val currentUsername by viewModel.currentUsername.collectAsStateWithLifecycle()
     val currentAvatar by viewModel.currentAvatar.collectAsStateWithLifecycle()
     var showEditProfileDialog by remember { mutableStateOf(false) }
     var codeCopied by remember { mutableStateOf(false) }
 
+    // Initialize or regenerate host room code when switching mode or tab
+    LaunchedEffect(selectedMode, onlineTabIndex) {
+        val isWlan = selectedMode == GameMode.WLAN_MULTIPLAYER
+        if (onlineTabIndex == 0 && (roomCode.isEmpty() || roomCode.startsWith("UNO-") || roomCode.startsWith("WLAN-") || roomCode.startsWith("ONLINE-"))) {
+            roomCode = viewModel.generateHostRoomCode(isWlan)
+        }
+    }
+
     LaunchedEffect(selectedMode, onlineTabIndex, roomCode, currentUsername, currentAvatar) {
         if (selectedMode == GameMode.ONLINE_ROOM || selectedMode == GameMode.WLAN_MULTIPLAYER) {
-            if (onlineTabIndex == 0) {
+            if (onlineTabIndex == 0 && roomCode.isNotEmpty()) {
                 viewModel.hostRoom(roomCode = roomCode, playerName = currentUsername, avatar = currentAvatar)
             } else if (selectedMode == GameMode.WLAN_MULTIPLAYER) {
                 viewModel.startDiscovery()
@@ -410,7 +422,7 @@ fun HomeScreen(
                                     }
                                 }
                                 IconButton(onClick = {
-                                    roomCode = if (isWlan) "WLAN-${(1000..9999).random()}" else "UNO-${(1000..9999).random()}"
+                                    roomCode = viewModel.generateHostRoomCode(isWlan)
                                     codeCopied = false
                                 }) {
                                     Icon(Icons.Default.Refresh, contentDescription = "Regenerate Code", tint = Color.White)
@@ -420,7 +432,7 @@ fun HomeScreen(
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
                                 text = if (isWlan)
-                                    "Host device acts as local network server. Friends connected to the same Wi-Fi join via room code or Host IP."
+                                    "Host device acts as local network server. Friends on the same Wi-Fi/Hotspot join via Room Code or Host IP."
                                 else
                                     "Share this code with friends. Real players only — bots will never be added.",
                                 color = Color(0xFFB0BEC5),
@@ -430,8 +442,8 @@ fun HomeScreen(
                             // Join view
                             OutlinedTextField(
                                 value = roomCode,
-                                onValueChange = { roomCode = it.uppercase() },
-                                label = { Text(if (isWlan) "Enter Room Code or Host IP" else "Enter 8-character Room Code") },
+                                onValueChange = { roomCode = it.uppercase().trim() },
+                                label = { Text(if (isWlan) "Enter Room Code (e.g. WLAN-1NJZ8VF) or Host IP" else "Enter Room Code (e.g. ONLINE-1NJZ8VF)") },
                                 singleLine = true,
                                 modifier = Modifier.fillMaxWidth(),
                                 colors = OutlinedTextFieldDefaults.colors(
@@ -444,32 +456,79 @@ fun HomeScreen(
 
                             Spacer(modifier = Modifier.height(8.dp))
 
+                            val isConnecting = connectionStatus == com.example.network.UnoNetworkProtocol.ConnectionStatus.CONNECTING ||
+                                    connectionStatus == com.example.network.UnoNetworkProtocol.ConnectionStatus.JOINING
+
                             Button(
                                 onClick = {
-                                    viewModel.joinRoom(roomCode, playerName = currentUsername, avatar = currentAvatar)
+                                    if (roomCode.isNotEmpty()) {
+                                        viewModel.joinRoom(roomCode, playerName = currentUsername, avatar = currentAvatar)
+                                    }
                                 },
+                                enabled = !isConnecting && roomCode.isNotEmpty(),
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .height(44.dp)
                                     .testTag("connect_room_button"),
                                 shape = RoundedCornerShape(10.dp),
                                 colors = ButtonDefaults.buttonColors(
-                                    containerColor = if (isClientConnected) Color(0xFF2E7D32) else Color(0xFF1E88E5)
+                                    containerColor = when {
+                                        isClientConnected -> Color(0xFF2E7D32)
+                                        isConnecting -> Color(0xFFE65100)
+                                        else -> Color(0xFF1E88E5)
+                                    }
                                 )
                             ) {
-                                Icon(Icons.Default.Wifi, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    text = if (isClientConnected) "CONNECTED TO HOST" else "CONNECT TO ROOM",
-                                    fontWeight = FontWeight.Bold
-                                )
+                                if (isConnecting) {
+                                    CircularProgressIndicator(modifier = Modifier.size(18.dp), color = Color.White, strokeWidth = 2.dp)
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = if (connectionStatus == com.example.network.UnoNetworkProtocol.ConnectionStatus.JOINING) "JOINING ROOM..." else "CONNECTING TO HOST...",
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                } else {
+                                    Icon(Icons.Default.Wifi, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = when {
+                                            isClientConnected -> "CONNECTED TO HOST LOBBY ✓"
+                                            else -> "CONNECT TO ROOM"
+                                        },
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+
+                            // Error status banner
+                            if (networkErrorMessage != null && connectionStatus == com.example.network.UnoNetworkProtocol.ConnectionStatus.ERROR) {
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Surface(
+                                    color = Color(0xFF7F1D1D),
+                                    shape = RoundedCornerShape(8.dp),
+                                    border = BorderStroke(1.dp, Color(0xFFEF4444)),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(8.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(Icons.Default.Info, contentDescription = "Error", tint = Color(0xFFFCA5A5), modifier = Modifier.size(18.dp))
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(
+                                            text = networkErrorMessage ?: "Connection failed. Verify host IP or room code.",
+                                            color = Color(0xFFFEE2E2),
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Medium
+                                        )
+                                    }
+                                }
                             }
 
                             // Discovered Rooms on Local Wi-Fi
                             if (isWlan && discoveredRooms.isNotEmpty()) {
                                 Spacer(modifier = Modifier.height(10.dp))
                                 Text(
-                                    text = "📡 Discovered on Local Wi-Fi:",
+                                    text = "📡 Discovered on Local Wi-Fi (Tap to Join):",
                                     color = Color(0xFFFFD54F),
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.Bold

@@ -70,9 +70,19 @@ class UnoWlanServer(
 
     fun getLocalIpAddress(): String {
         try {
-            val interfaces = NetworkInterface.getNetworkInterfaces()
-            while (interfaces.hasMoreElements()) {
-                val nIf = interfaces.nextElement()
+            val interfaces = NetworkInterface.getNetworkInterfaces().toList()
+            // Prioritize Wi-Fi and hotspot interfaces: wlan, ap, softap, eth
+            val sortedInterfaces = interfaces.sortedByDescending { nIf ->
+                val name = nIf.name.lowercase()
+                when {
+                    name.startsWith("wlan") -> 4
+                    name.startsWith("ap") || name.startsWith("softap") -> 3
+                    name.startsWith("eth") -> 2
+                    name.startsWith("rndis") -> 1
+                    else -> 0
+                }
+            }
+            for (nIf in sortedInterfaces) {
                 val addresses = nIf.inetAddresses
                 while (addresses.hasMoreElements()) {
                     val addr = addresses.nextElement()
@@ -100,6 +110,9 @@ class UnoWlanServer(
         hostName = hostPlayer.name
         currentPort = port
 
+        val localIp = getLocalIpAddress()
+        Log.d(tag, "[ROOM] createRoom roomCode=$roomCode host=${hostPlayer.name} ip=$localIp port=$port")
+
         val initialHost = hostPlayer.copy(
             isHost = true,
             isHuman = true,
@@ -113,7 +126,7 @@ class UnoWlanServer(
         acceptJob = scope.launch(Dispatchers.IO) {
             try {
                 serverSocket = ServerSocket(port)
-                Log.d(tag, "WLAN Server listening on port $port")
+                Log.d(tag, "[ROOM] WLAN Server listening on $localIp:$port")
 
                 startUdpBeacon()
                 startPingLoop()
@@ -126,7 +139,7 @@ class UnoWlanServer(
                 }
             } catch (e: Exception) {
                 if (isActive) {
-                    Log.e(tag, "Server error: ${e.message}")
+                    Log.e(tag, "[ROOM] Server error: ${e.message}")
                 }
             }
         }
@@ -134,6 +147,9 @@ class UnoWlanServer(
 
     private fun handleIncomingConnection(socket: Socket) {
         var playerId = ""
+        val socketAddress = socket.remoteSocketAddress?.toString() ?: "unknown"
+        Log.d(tag, "[CONNECTION] socket connected socketId=$socketAddress")
+
         try {
             val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
             val writer = PrintWriter(socket.getOutputStream(), true)
@@ -145,11 +161,61 @@ class UnoWlanServer(
                 val type = json.getString("type")
 
                 when (type) {
-                    UnoNetworkProtocol.MSG_JOIN_LOBBY -> {
+                    UnoNetworkProtocol.MSG_JOIN_LOBBY, UnoNetworkProtocol.MSG_JOIN_REQUEST -> {
                         playerId = json.getString("playerId")
                         val playerName = json.getString("name")
-                        val playerAvatar = json.getString("avatar")
+                        val playerAvatar = json.optString("avatar", "😎")
+                        val requestedCode = json.optString("roomCode", "")
 
+                        Log.d(tag, "[JOIN] playerId=$playerId username=$playerName roomCode=$requestedCode")
+
+                        // 1. Room Code Validation
+                        if (requestedCode.isNotEmpty()) {
+                            val cleanReq = requestedCode.removePrefix("WLAN-").removePrefix("UNO-").removePrefix("ONLINE-").trim()
+                            val cleanCur = currentRoomCode.removePrefix("WLAN-").removePrefix("UNO-").removePrefix("ONLINE-").trim()
+                            val matches = cleanReq.equals(cleanCur, ignoreCase = true) ||
+                                    requestedCode.equals(currentRoomCode, ignoreCase = true) ||
+                                    requestedCode.contains(getLocalIpAddress())
+                            if (!matches) {
+                                Log.w(tag, "[ROOM] join rejected reason=${UnoNetworkProtocol.ERR_INVALID_ROOM_CODE}")
+                                val reject = JSONObject().apply {
+                                    put("type", UnoNetworkProtocol.MSG_JOIN_REJECTED)
+                                    put("reason", UnoNetworkProtocol.ERR_INVALID_ROOM_CODE)
+                                    put("message", "Room code $requestedCode does not match host room $currentRoomCode")
+                                }
+                                writer.println(reject.toString())
+                                return
+                            }
+                        }
+
+                        // 2. Capacity Check (Max 10 players)
+                        val currentList = _connectedPlayers.value
+                        val isExisting = currentList.any { it.id == playerId }
+                        if (!isExisting && currentList.size >= 10) {
+                            Log.w(tag, "[ROOM] join rejected reason=${UnoNetworkProtocol.ERR_ROOM_FULL}")
+                            val reject = JSONObject().apply {
+                                put("type", UnoNetworkProtocol.MSG_JOIN_REJECTED)
+                                put("reason", UnoNetworkProtocol.ERR_ROOM_FULL)
+                                put("message", "Room is full (10/10 players)")
+                            }
+                            writer.println(reject.toString())
+                            return
+                        }
+
+                        // 3. Game in-progress check
+                        val activeGame = currentGameState
+                        if (activeGame != null && !isExisting && activeGame.players.none { it.id == playerId }) {
+                            Log.w(tag, "[ROOM] join rejected reason=${UnoNetworkProtocol.ERR_GAME_ALREADY_IN_PROGRESS}")
+                            val reject = JSONObject().apply {
+                                put("type", UnoNetworkProtocol.MSG_JOIN_REJECTED)
+                                put("reason", UnoNetworkProtocol.ERR_GAME_ALREADY_IN_PROGRESS)
+                                put("message", "Game already in progress")
+                            }
+                            writer.println(reject.toString())
+                            return
+                        }
+
+                        // Player registration
                         val newPlayer = Player(
                             id = playerId,
                             name = playerName,
@@ -160,19 +226,41 @@ class UnoWlanServer(
                             isReconnecting = false,
                             pingMs = 15
                         )
-
                         clientSockets[playerId] = ClientSession(socket, writer, newPlayer)
 
-                        // Update players list - only real players
-                        val currentList = _connectedPlayers.value.toMutableList()
-                        val existingIdx = currentList.indexOfFirst { it.id == playerId }
+                        val updatedList = _connectedPlayers.value.toMutableList()
+                        val existingIdx = updatedList.indexOfFirst { it.id == playerId }
                         if (existingIdx >= 0) {
-                            currentList[existingIdx] = newPlayer
+                            updatedList[existingIdx] = newPlayer
                         } else {
-                            currentList.add(newPlayer)
+                            updatedList.add(newPlayer)
                         }
-                        _connectedPlayers.value = currentList
+                        _connectedPlayers.value = updatedList
+
+                        Log.d(tag, "[ROOM] player joined roomCode=$currentRoomCode playerCount=${updatedList.size}")
+
+                        // Send JOIN_ACCEPTED to this client
+                        val accept = JSONObject().apply {
+                            put("type", UnoNetworkProtocol.MSG_JOIN_ACCEPTED)
+                            put("roomCode", currentRoomCode)
+                            put("hostName", hostName)
+                            put("playerId", playerId)
+                        }
+                        writer.println(accept.toString())
+
+                        // Broadcast authoritative room state to all clients
                         broadcastLobbyState()
+
+                        // If reconnecting during an active match, synchronize state
+                        if (activeGame != null) {
+                            val syncPlayers = activeGame.players.map {
+                                if (it.id == playerId) it.copy(isConnected = true, isReconnecting = false) else it
+                            }
+                            val reconnectedState = activeGame.copy(players = syncPlayers)
+                            currentGameState = reconnectedState
+                            scope.launch(Dispatchers.Main) { onStateUpdated(reconnectedState) }
+                            broadcastGameState(reconnectedState)
+                        }
                     }
 
                     UnoNetworkProtocol.MSG_PLAYER_ACTION -> {
@@ -194,7 +282,7 @@ class UnoWlanServer(
                 line = reader.readLine()
             }
         } catch (e: Exception) {
-            Log.d(tag, "Client disconnected: $playerId (${e.message})")
+            Log.d(tag, "[DISCONNECT] socketId=$socketAddress playerId=$playerId (${e.message})")
         } finally {
             if (playerId.isNotEmpty()) {
                 handleClientDisconnect(playerId)
@@ -261,12 +349,15 @@ class UnoWlanServer(
     }
 
     private fun handleClientDisconnect(playerId: String) {
-        clientSockets.remove(playerId)
+        val session = clientSockets.remove(playerId)
+        val socketAddress = session?.socket?.remoteSocketAddress?.toString() ?: "unknown"
+        Log.d(tag, "[DISCONNECT] socketId=$socketAddress playerId=$playerId")
         val gameState = currentGameState
 
         if (gameState == null) {
             // Still in lobby: remove player completely
             _connectedPlayers.value = _connectedPlayers.value.filter { it.id != playerId }
+            Log.d(tag, "[ROOM] player left roomCode=$currentRoomCode playerCount=${_connectedPlayers.value.size}")
             broadcastLobbyState()
         } else {
             // During active game: mark player as disconnected / reconnecting (DO NOT replace with bot)
@@ -299,6 +390,8 @@ class UnoWlanServer(
     }
 
     fun broadcastLobbyState() {
+        val clientCount = _connectedPlayers.value.size
+        Log.d(tag, "[BROADCAST] room state sent to $clientCount clients")
         val json = JSONObject().apply {
             put("type", UnoNetworkProtocol.MSG_LOBBY_UPDATE)
             put("roomCode", currentRoomCode)
@@ -307,7 +400,7 @@ class UnoWlanServer(
             val playersArr = JSONArray()
             _connectedPlayers.value.forEach { playersArr.put(UnoNetworkProtocol.playerToJson(it)) }
             put("players", playersArr)
-            put("canStart", _connectedPlayers.value.size >= 2)
+            put("canStart", clientCount >= 2)
         }
         sendToAllClients(json.toString())
     }

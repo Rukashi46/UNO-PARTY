@@ -77,6 +77,8 @@ class UnoViewModel(application: Application) : AndroidViewModel(application) {
 
     val discoveredRooms: StateFlow<List<DiscoveredRoom>> = wlanClient.discoveredRooms
     val isClientConnected: StateFlow<Boolean> = wlanClient.isConnected
+    val connectionStatus: StateFlow<UnoNetworkProtocol.ConnectionStatus> = wlanClient.connectionStatus
+    val networkErrorMessage: StateFlow<String?> = wlanClient.errorMessage
 
     init {
         val db = UnoDatabase.getDatabase(application)
@@ -140,6 +142,12 @@ class UnoViewModel(application: Application) : AndroidViewModel(application) {
         _activeRules.value = newRules
     }
 
+    fun generateHostRoomCode(isWlan: Boolean = true): String {
+        val localIp = wlanServer.getLocalIpAddress()
+        val prefix = if (isWlan) "WLAN-" else "ONLINE-"
+        return RoomCodeUtil.encodeIpToRoomCode(localIp, prefix = prefix)
+    }
+
     // Network Room Management
     fun hostRoom(
         roomCode: String,
@@ -176,22 +184,18 @@ class UnoViewModel(application: Application) : AndroidViewModel(application) {
         leaveNetwork()
         _networkRole.value = NetworkRole.CLIENT
 
-        val parsed = RoomCodeUtil.decodeRoomCodeToIp(hostAddressOrCode)
-        val hostIp = parsed?.first ?: hostAddressOrCode.trim()
-        val port = parsed?.second ?: UnoNetworkProtocol.DEFAULT_PORT
-
         val clientPlayer = Player(
             id = userPrefs.getPlayerId(),
             name = playerName,
             avatar = avatar,
             isHuman = true,
             isHost = false,
-            isConnected = true,
+            isConnected = false,
             isReconnecting = false,
             pingMs = 0
         )
 
-        wlanClient.connectToHost(hostIp, port, clientPlayer)
+        wlanClient.resolveAndConnect(hostAddressOrCode, clientPlayer)
     }
 
     fun startDiscovery() {

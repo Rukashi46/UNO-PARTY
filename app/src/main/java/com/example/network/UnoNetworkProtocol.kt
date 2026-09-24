@@ -19,7 +19,33 @@ object UnoNetworkProtocol {
     const val DEFAULT_PORT = 8888
     const val UDP_DISCOVERY_PORT = 8889
 
+    // Connection Lifecycle States
+    enum class ConnectionStatus {
+        DISCONNECTED,
+        CONNECTING,
+        CONNECTED,
+        JOINING,
+        JOINED,
+        RECONNECTING,
+        ERROR
+    }
+
+    // Protocol Error Codes
+    const val ERR_SERVER_UNREACHABLE = "SERVER_UNREACHABLE"
+    const val ERR_ROOM_NOT_FOUND = "ROOM_NOT_FOUND"
+    const val ERR_ROOM_FULL = "ROOM_FULL"
+    const val ERR_INVALID_ROOM_CODE = "INVALID_ROOM_CODE"
+    const val ERR_WRONG_MODE = "WRONG_MODE"
+    const val ERR_SOCKET_CONNECTION_FAILED = "SOCKET_CONNECTION_FAILED"
+    const val ERR_JOIN_TIMEOUT = "JOIN_TIMEOUT"
+    const val ERR_GAME_ALREADY_IN_PROGRESS = "GAME_ALREADY_IN_PROGRESS"
+    const val ERR_NETWORK_UNREACHABLE = "NETWORK_UNREACHABLE"
+
+    // Message Types
     const val MSG_JOIN_LOBBY = "JOIN_LOBBY"
+    const val MSG_JOIN_REQUEST = "JOIN_REQUEST"
+    const val MSG_JOIN_ACCEPTED = "JOIN_ACCEPTED"
+    const val MSG_JOIN_REJECTED = "JOIN_REJECTED"
     const val MSG_LOBBY_UPDATE = "LOBBY_UPDATE"
     const val MSG_START_GAME = "START_GAME"
     const val MSG_PLAYER_ACTION = "PLAYER_ACTION"
