@@ -21,6 +21,7 @@ import com.example.model.UnoCard
 import com.example.model.UnoColor
 import com.example.network.DiscoveredRoom
 import com.example.network.RoomCodeUtil
+import com.example.network.SupabaseManager
 import com.example.network.UnoNetworkProtocol
 import com.example.network.UnoWlanClient
 import com.example.network.UnoWlanServer
@@ -79,6 +80,7 @@ class UnoViewModel(application: Application) : AndroidViewModel(application) {
     val isClientConnected: StateFlow<Boolean> = wlanClient.isConnected
     val connectionStatus: StateFlow<UnoNetworkProtocol.ConnectionStatus> = wlanClient.connectionStatus
     val networkErrorMessage: StateFlow<String?> = wlanClient.errorMessage
+    val currentUserId: String get() = userPrefs.getPlayerId()
 
     init {
         val db = UnoDatabase.getDatabase(application)
@@ -100,6 +102,18 @@ class UnoViewModel(application: Application) : AndroidViewModel(application) {
                 if (_networkRole.value == NetworkRole.CLIENT) {
                     _lobbyPlayers.value = players
                 }
+            }
+        }
+
+        // Observe rule changes pushed by host
+        wlanClient.onRulesUpdated = { rules ->
+            _activeRules.value = rules
+        }
+
+        // Sync profile to cloud on launch if configured
+        if (SupabaseManager.isConfigured) {
+            viewModelScope.launch {
+                SupabaseManager.syncProfile(userPrefs.getPlayerId(), userPrefs.getUsername(), userPrefs.getAvatar())
             }
         }
     }
@@ -124,6 +138,11 @@ class UnoViewModel(application: Application) : AndroidViewModel(application) {
         val success = userPrefs.saveUsername(newName)
         if (success) {
             _currentUsername.value = userPrefs.getUsername()
+            if (SupabaseManager.isConfigured) {
+                viewModelScope.launch {
+                    SupabaseManager.syncProfile(userPrefs.getPlayerId(), userPrefs.getUsername(), userPrefs.getAvatar())
+                }
+            }
         }
         return success
     }
@@ -131,6 +150,11 @@ class UnoViewModel(application: Application) : AndroidViewModel(application) {
     fun saveAvatar(newAvatar: String) {
         userPrefs.saveAvatar(newAvatar)
         _currentAvatar.value = newAvatar
+        if (SupabaseManager.isConfigured) {
+            viewModelScope.launch {
+                SupabaseManager.syncProfile(userPrefs.getPlayerId(), userPrefs.getUsername(), newAvatar)
+            }
+        }
     }
 
     fun validateUsername(name: String): String? = userPrefs.validateUsername(name)
@@ -139,7 +163,14 @@ class UnoViewModel(application: Application) : AndroidViewModel(application) {
     private var unplayableCardJob: Job? = null
 
     fun updateRules(newRules: GameRules) {
+        if (_networkRole.value == NetworkRole.CLIENT) {
+            // Clients cannot edit authoritative room rules
+            return
+        }
         _activeRules.value = newRules
+        if (_networkRole.value == NetworkRole.HOST) {
+            wlanServer.updateRules(newRules)
+        }
     }
 
     fun generateHostRoomCode(isWlan: Boolean = true): String {
@@ -174,6 +205,18 @@ class UnoViewModel(application: Application) : AndroidViewModel(application) {
 
         _lobbyPlayers.value = listOf(hostPlayer)
         wlanServer.startServer(roomCode, hostPlayer)
+
+        if (SupabaseManager.isConfigured) {
+            viewModelScope.launch {
+                SupabaseManager.registerRoom(
+                    roomCode = roomCode,
+                    hostPlayerId = hostPlayer.id,
+                    mode = "ONLINE_ROOM",
+                    rules = _activeRules.value,
+                    hostAddress = localIp
+                )
+            }
+        }
     }
 
     fun joinRoom(
@@ -207,6 +250,12 @@ class UnoViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun leaveNetwork() {
+        if (_networkRole.value == NetworkRole.HOST && SupabaseManager.isConfigured) {
+            val code = _currentRoomCode.value
+            viewModelScope.launch {
+                SupabaseManager.closeRoom(code)
+            }
+        }
         wlanServer.stopServer()
         wlanClient.disconnect()
         wlanClient.stopDiscovery()
@@ -247,12 +296,17 @@ class UnoViewModel(application: Application) : AndroidViewModel(application) {
         val state = _gameState.value
         val playerIdx = state.currentPlayerIndex
         val player = state.players.getOrNull(playerIdx) ?: return
-        if (!player.isHuman && state.mode != GameMode.ALL_BOTS) return
+        val myPlayerIndex = state.players.indexOfFirst { it.id == userPrefs.getPlayerId() }
 
         if (_networkRole.value == NetworkRole.CLIENT) {
-            wlanClient.sendAction(actionType = UnoNetworkProtocol.ACTION_PLAY_CARD, card = card)
+            // Only send action if it is the client's turn
+            if (playerIdx == myPlayerIndex) {
+                wlanClient.sendAction(actionType = UnoNetworkProtocol.ACTION_PLAY_CARD, card = card)
+            }
             return
         }
+
+        if (!player.isHuman && state.mode != GameMode.ALL_BOTS) return
 
         if (state.rules.hapticsEnabled) {
             effects.playCardHaptic()
@@ -317,12 +371,16 @@ class UnoViewModel(application: Application) : AndroidViewModel(application) {
         val state = _gameState.value
         val playerIdx = state.currentPlayerIndex
         val player = state.players.getOrNull(playerIdx) ?: return
-        if (!player.isHuman && state.mode != GameMode.ALL_BOTS) return
+        val myPlayerIndex = state.players.indexOfFirst { it.id == userPrefs.getPlayerId() }
 
         if (_networkRole.value == NetworkRole.CLIENT) {
-            wlanClient.sendAction(actionType = UnoNetworkProtocol.ACTION_DRAW_CARD)
+            if (playerIdx == myPlayerIndex) {
+                wlanClient.sendAction(actionType = UnoNetworkProtocol.ACTION_DRAW_CARD)
+            }
             return
         }
+
+        if (!player.isHuman && state.mode != GameMode.ALL_BOTS) return
 
         if (state.rules.hapticsEnabled) {
             effects.drawCardHaptic()
@@ -364,12 +422,16 @@ class UnoViewModel(application: Application) : AndroidViewModel(application) {
         val state = _gameState.value
         val playerIdx = state.currentPlayerIndex
         val player = state.players.getOrNull(playerIdx) ?: return
-        if (!player.isHuman && state.mode != GameMode.ALL_BOTS) return
+        val myPlayerIndex = state.players.indexOfFirst { it.id == userPrefs.getPlayerId() }
 
         if (_networkRole.value == NetworkRole.CLIENT) {
-            wlanClient.sendAction(actionType = UnoNetworkProtocol.ACTION_PASS_TURN)
+            if (playerIdx == myPlayerIndex) {
+                wlanClient.sendAction(actionType = UnoNetworkProtocol.ACTION_PASS_TURN)
+            }
             return
         }
+
+        if (!player.isHuman && state.mode != GameMode.ALL_BOTS) return
 
         val nextState = UnoGameEngine.passTurn(state, playerIdx)
         _gameState.value = nextState
@@ -525,6 +587,17 @@ class UnoViewModel(application: Application) : AndroidViewModel(application) {
                 } else {
                     repository.recordParticipant(p.id, p.name, unosCalled = if (p.hasCalledUno) 1 else 0)
                 }
+            }
+
+            if (SupabaseManager.isConfigured) {
+                SupabaseManager.recordHistory(
+                    roomCode = state.roomCode ?: "OFFLINE",
+                    winnerId = winner.id,
+                    winnerName = winner.name,
+                    playerCount = state.players.size,
+                    mode = state.mode.name,
+                    rounds = state.roundNumber
+                )
             }
         }
     }

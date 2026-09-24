@@ -4,6 +4,7 @@ import android.util.Log
 import com.example.engine.UnoGameEngine
 import com.example.engine.UnoGameState
 import com.example.model.GameMode
+import com.example.model.GamePhase
 import com.example.model.GameRules
 import com.example.model.Player
 import com.example.model.UnoCard
@@ -51,6 +52,11 @@ class UnoWlanServer(
 
     var hostName: String = "Host"
         private set
+
+    var hostPlayerId: String = ""
+        private set
+
+    private var serverRules: GameRules = GameRules()
 
     private val _connectedPlayers = MutableStateFlow<List<Player>>(emptyList())
     val connectedPlayers: StateFlow<List<Player>> = _connectedPlayers.asStateFlow()
@@ -108,6 +114,7 @@ class UnoWlanServer(
         stopServer()
         currentRoomCode = roomCode
         hostName = hostPlayer.name
+        hostPlayerId = hostPlayer.id
         currentPort = port
 
         val localIp = getLocalIpAddress()
@@ -267,6 +274,10 @@ class UnoWlanServer(
                         handlePlayerAction(json)
                     }
 
+                    UnoNetworkProtocol.MSG_UPDATE_ROOM_RULES -> {
+                        Log.w(tag, "Client attempted to change room rules. Ignored.")
+                    }
+
                     UnoNetworkProtocol.MSG_PONG -> {
                         val sentTime = json.optLong("timestamp", 0L)
                         if (sentTime > 0) {
@@ -323,7 +334,8 @@ class UnoWlanServer(
                 nextState = UnoGameEngine.catchUno(state, playerIdx, targetIndex)
             }
             UnoNetworkProtocol.ACTION_CHOOSE_COLOR -> {
-                val color = UnoColor.valueOf(json.getString("color"))
+                val colorStr = if (json.has("chosenColor")) json.getString("chosenColor") else json.getString("color")
+                val color = UnoColor.valueOf(colorStr)
                 nextState = UnoGameEngine.completeWildSelection(state, color)
             }
             UnoNetworkProtocol.ACTION_CHOOSE_CUSTOM_WILD -> {
@@ -398,9 +410,23 @@ class UnoWlanServer(
             put("hostIp", getLocalIpAddress())
             put("port", currentPort)
             val playersArr = JSONArray()
-            _connectedPlayers.value.forEach { playersArr.put(UnoNetworkProtocol.playerToJson(it)) }
+            _connectedPlayers.value.forEach { playersArr.put(UnoNetworkProtocol.playerToJson(it, includePrivateHand = false)) }
             put("players", playersArr)
+            put("rules", UnoNetworkProtocol.rulesToJson(serverRules))
             put("canStart", clientCount >= 2)
+        }
+        sendToAllClients(json.toString())
+    }
+
+    fun updateRules(newRules: GameRules) {
+        if (currentGameState != null && currentGameState?.gamePhase != GamePhase.NOT_STARTED) {
+            Log.w(tag, "Rules cannot be modified after match starts!")
+            return
+        }
+        serverRules = newRules
+        val json = JSONObject().apply {
+            put("type", UnoNetworkProtocol.MSG_RULES_UPDATED)
+            put("rules", UnoNetworkProtocol.rulesToJson(newRules))
         }
         sendToAllClients(json.toString())
     }
@@ -409,6 +435,7 @@ class UnoWlanServer(
         val players = _connectedPlayers.value
         if (players.size < 2) return null
 
+        serverRules = rules
         val initialState = UnoGameEngine.startNewGameWithPlayers(
             players = players,
             mode = mode,
@@ -421,12 +448,21 @@ class UnoWlanServer(
             onStateUpdated(initialState)
         }
 
-        // Broadcast START_GAME to all clients
-        val json = JSONObject().apply {
-            put("type", UnoNetworkProtocol.MSG_START_GAME)
-            put("gameState", UnoNetworkProtocol.stateToJson(initialState))
+        // Broadcast personalized START_GAME to all clients (opponent private hands stripped server-side)
+        scope.launch(Dispatchers.IO) {
+            clientSockets.forEach { (playerId, session) ->
+                try {
+                    val personalizedJson = UnoNetworkProtocol.stateToJsonForPlayer(initialState, playerId)
+                    val json = JSONObject().apply {
+                        put("type", UnoNetworkProtocol.MSG_START_GAME)
+                        put("gameState", personalizedJson)
+                    }
+                    session.writer.println(json.toString())
+                } catch (e: Exception) {
+                    Log.e(tag, "Failed to send START_GAME to client $playerId: ${e.message}")
+                }
+            }
         }
-        sendToAllClients(json.toString())
 
         return initialState
     }
@@ -437,11 +473,21 @@ class UnoWlanServer(
     }
 
     fun broadcastGameState(state: UnoGameState) {
-        val json = JSONObject().apply {
-            put("type", UnoNetworkProtocol.MSG_SYNC_STATE)
-            put("gameState", UnoNetworkProtocol.stateToJson(state))
+        currentGameState = state
+        scope.launch(Dispatchers.IO) {
+            clientSockets.forEach { (playerId, session) ->
+                try {
+                    val personalizedJson = UnoNetworkProtocol.stateToJsonForPlayer(state, playerId)
+                    val json = JSONObject().apply {
+                        put("type", UnoNetworkProtocol.MSG_SYNC_STATE)
+                        put("gameState", personalizedJson)
+                    }
+                    session.writer.println(json.toString())
+                } catch (e: Exception) {
+                    Log.e(tag, "Failed to send SYNC_STATE to client $playerId: ${e.message}")
+                }
+            }
         }
-        sendToAllClients(json.toString())
     }
 
     private fun sendToAllClients(msg: String) {
@@ -465,7 +511,7 @@ class UnoWlanServer(
                 val broadcastAddr = InetAddress.getByName("255.255.255.255")
 
                 while (isActive) {
-                    val message = "UNO_ROOM|$currentRoomCode|$hostName|${getLocalIpAddress()}|$currentPort|${_connectedPlayers.value.size}"
+                    val message = "UNO_ROOM|$currentRoomCode|$hostName|${getLocalIpAddress()}|$currentPort|${_connectedPlayers.value.size}|$hostPlayerId"
                     val bytes = message.toByteArray()
                     val packet = DatagramPacket(bytes, bytes.size, broadcastAddr, UnoNetworkProtocol.UDP_DISCOVERY_PORT)
                     udpSocket?.send(packet)

@@ -22,7 +22,6 @@ class UserPreferencesManager(context: Context) {
         private const val KEY_AVATAR = "pref_user_avatar"
         private const val KEY_FIRST_TIME_COMPLETE = "pref_first_time_setup_done"
 
-        const val DEFAULT_USERNAME = "Varun"
         const val DEFAULT_AVATAR = "🦁"
         const val MIN_USERNAME_LENGTH = 2
         const val MAX_USERNAME_LENGTH = 16
@@ -64,7 +63,12 @@ class UserPreferencesManager(context: Context) {
      * Gets the device's persistent display name.
      */
     fun getUsername(): String {
-        return prefs.getString(KEY_USERNAME, null)?.takeIf { it.isNotBlank() } ?: DEFAULT_USERNAME
+        val saved = prefs.getString(KEY_USERNAME, null)?.takeIf { it.isNotBlank() }
+        if (saved != null) return saved
+        // Generate a unique non-hardcoded default player name per device
+        val generated = "Player_${(1000..9999).random()}"
+        prefs.edit().putString(KEY_USERNAME, generated).apply()
+        return generated
     }
 
     /**
@@ -80,13 +84,23 @@ class UserPreferencesManager(context: Context) {
     }
 
     /**
-     * Retrieves the stable unique ID for this device.
+     * Retrieves the stable unique UUID for this device.
      * Guaranteed to persist across app launches and network matches.
+     * Standard UUID format compliant with PostgreSQL/Supabase UUID types.
      */
     fun getPlayerId(): String {
         var playerId = prefs.getString(KEY_PLAYER_ID, null)
-        if (playerId.isNullOrBlank()) {
-            playerId = "usr_${UUID.randomUUID().toString().replace("-", "").take(12)}"
+        val isValidUuid = try {
+            if (playerId != null) {
+                UUID.fromString(playerId)
+                true
+            } else false
+        } catch (_: Exception) {
+            false
+        }
+
+        if (!isValidUuid || playerId.isNullOrBlank()) {
+            playerId = UUID.randomUUID().toString()
             prefs.edit().putString(KEY_PLAYER_ID, playerId).apply()
         }
         return playerId

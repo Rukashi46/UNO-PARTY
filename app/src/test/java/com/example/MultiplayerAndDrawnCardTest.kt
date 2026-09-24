@@ -17,7 +17,12 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [36])
 class MultiplayerAndDrawnCardTest {
 
     private val rules = GameRules()
@@ -123,11 +128,11 @@ class MultiplayerAndDrawnCardTest {
 
     @Test
     fun testStartNewGameWithOnlyAuthoritativeConnectedPlayers() {
-        val varun = Player("host_1", "Varun", "🦁", isHuman = true, isHost = true)
-        val arun = Player("client_1", "Arun", "🦊", isHuman = true, isHost = false)
-        val karthi = Player("client_2", "Karthi", "🐼", isHuman = true, isHost = false)
+        val host = Player("host_1", "HostPlayer", "🦁", isHuman = true, isHost = true)
+        val p2 = Player("client_1", "PlayerTwo", "🦊", isHuman = true, isHost = false)
+        val p3 = Player("client_2", "PlayerThree", "🐼", isHuman = true, isHost = false)
 
-        val connectedPlayers = listOf(varun, arun, karthi)
+        val connectedPlayers = listOf(host, p2, p3)
 
         val gameState = UnoGameEngine.startNewGameWithPlayers(
             players = connectedPlayers,
@@ -137,9 +142,9 @@ class MultiplayerAndDrawnCardTest {
         )
 
         assertEquals("Game must have exactly 3 players", 3, gameState.players.size)
-        assertEquals("Varun", gameState.players[0].name)
-        assertEquals("Arun", gameState.players[1].name)
-        assertEquals("Karthi", gameState.players[2].name)
+        assertEquals("HostPlayer", gameState.players[0].name)
+        assertEquals("PlayerTwo", gameState.players[1].name)
+        assertEquals("PlayerThree", gameState.players[2].name)
 
         // Verify zero bots
         for (player in gameState.players) {
@@ -157,11 +162,69 @@ class MultiplayerAndDrawnCardTest {
 
         val code = RoomCodeUtil.encodeIpToRoomCode(testIp, testPort)
         assertNotNull(code)
-        assertTrue("Code should start with UNO-", code.startsWith("UNO-"))
+        assertTrue("Code should start with WLAN-", code.startsWith("WLAN-"))
 
         val decoded = RoomCodeUtil.decodeRoomCodeToIp(code)
         assertNotNull(decoded)
         assertEquals(testIp, decoded?.first)
         assertEquals(testPort, decoded?.second)
+    }
+
+    @Test
+    fun testPersonalizedStateSerializationHidesOpponentHands() {
+        val host = Player("host_id", "HostAlice", "🦁", isHuman = true, isHost = true, hand = listOf(
+            UnoCard("h1", UnoColor.RED, UnoValue.ONE),
+            UnoCard("h2", UnoColor.BLUE, UnoValue.TWO),
+            UnoCard("h3", UnoColor.GREEN, UnoValue.THREE)
+        ))
+        val client = Player("client_id", "ClientBob", "🦊", isHuman = true, isHost = false, hand = listOf(
+            UnoCard("c1", UnoColor.YELLOW, UnoValue.FOUR),
+            UnoCard("c2", UnoColor.RED, UnoValue.FIVE)
+        ))
+
+        val fullState = UnoGameState(
+            players = listOf(host, client),
+            currentPlayerIndex = 0,
+            activeColor = UnoColor.RED,
+            discardPile = listOf(UnoCard("d1", UnoColor.RED, UnoValue.ZERO)),
+            drawPile = listOf(UnoCard("dp1", UnoColor.BLUE, UnoValue.ONE)),
+            gamePhase = GamePhase.PLAYING,
+            rules = rules,
+            roomCode = "WLAN-1234"
+        )
+
+        // Generate JSON specifically for clientBob
+        val jsonForClient = com.example.network.UnoNetworkProtocol.stateToJsonForPlayer(fullState, "client_id")
+        val parsedStateForClient = com.example.network.UnoNetworkProtocol.jsonToState(jsonForClient)
+
+        assertNotNull(parsedStateForClient)
+        val clientViewHost = parsedStateForClient.players.first { it.id == "host_id" }
+        val clientViewSelf = parsedStateForClient.players.first { it.id == "client_id" }
+
+        // Host's private hand MUST be empty in client's view
+        assertTrue("Host hand must be empty in client view", clientViewHost.hand.isEmpty())
+        assertEquals("Host networkCardCount must match real hand size", 3, clientViewHost.cardCount)
+
+        // Client's own hand MUST be preserved
+        assertEquals("Client own hand must have 2 cards", 2, clientViewSelf.hand.size)
+        assertEquals("Client own card count must be 2", 2, clientViewSelf.cardCount)
+        assertEquals("c1", clientViewSelf.hand[0].id)
+        assertEquals("c2", clientViewSelf.hand[1].id)
+    }
+
+    @Test
+    fun testRuleSyncMessageSerialization() {
+        val customRules = GameRules(
+            stackingDrawTwos = false,
+            sevenZeroRule = false,
+            jumpInRule = false
+        )
+        val rulesJson = com.example.network.UnoNetworkProtocol.rulesToJson(customRules)
+        val parsedRules = com.example.network.UnoNetworkProtocol.jsonToRules(rulesJson)
+
+        assertNotNull(parsedRules)
+        assertFalse(parsedRules.stackingDrawTwos)
+        assertFalse(parsedRules.sevenZeroRule)
+        assertFalse(parsedRules.jumpInRule)
     }
 }

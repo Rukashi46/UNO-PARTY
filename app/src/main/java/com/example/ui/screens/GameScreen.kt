@@ -94,6 +94,7 @@ import com.example.ui.components.WildColorPickerDialog
 @Composable
 fun GameScreen(
     gameState: UnoGameState,
+    localPlayerId: String? = null,
     onPlayCard: (UnoCard) -> Unit,
     onDrawCard: () -> Unit,
     onPassTurn: () -> Unit,
@@ -113,17 +114,29 @@ fun GameScreen(
     var showQuitConfirmation by remember { mutableStateOf(false) }
 
     val humanIndex = when (gameState.mode) {
-        GameMode.SOLO_BOTS, GameMode.ONLINE_ROOM, GameMode.WLAN_MULTIPLAYER -> 0
+        GameMode.ONLINE_ROOM, GameMode.WLAN_MULTIPLAYER -> {
+            if (localPlayerId != null) {
+                gameState.players.indexOfFirst { it.id == localPlayerId }.takeIf { it >= 0 } ?: 0
+            } else 0
+        }
+        GameMode.SOLO_BOTS -> 0
         GameMode.PASS_AND_PLAY -> gameState.currentPlayerIndex
         GameMode.ALL_BOTS -> -1
     }
 
     val activePlayer = gameState.currentPlayer
-    val isMyTurn = activePlayer?.isHuman == true || gameState.mode == GameMode.ALL_BOTS
+    val isMyTurn = when (gameState.mode) {
+        GameMode.ONLINE_ROOM, GameMode.WLAN_MULTIPLAYER -> {
+            activePlayer != null && (localPlayerId == null || activePlayer.id == localPlayerId)
+        }
+        GameMode.SOLO_BOTS -> activePlayer?.isHuman == true
+        GameMode.PASS_AND_PLAY -> true
+        GameMode.ALL_BOTS -> true
+    }
     val humanPlayer = gameState.players.getOrNull(if (humanIndex >= 0) humanIndex else 0)
 
     val topCard = gameState.topDiscardCard
-    val catchTarget = gameState.players.firstOrNull { it.canBePenalizedUno && it.hand.size == 1 && it.id != activePlayer?.id }
+    val catchTarget = gameState.players.firstOrNull { it.canBePenalizedUno && it.cardCount == 1 && it.id != activePlayer?.id }
 
     // Check jump-in eligibility for human
     val jumpInCard = remember(gameState.discardPile, humanPlayer?.hand) {

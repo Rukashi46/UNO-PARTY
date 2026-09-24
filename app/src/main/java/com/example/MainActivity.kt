@@ -83,6 +83,7 @@ fun UnoAppRoot(
             }
             GameScreen(
                 gameState = gameState,
+                localPlayerId = viewModel.currentUserId,
                 onPlayCard = { card -> viewModel.playCard(card) },
                 onDrawCard = { viewModel.drawCard() },
                 onPassTurn = { viewModel.passTurn() },

@@ -50,6 +50,10 @@ object UnoNetworkProtocol {
     const val MSG_START_GAME = "START_GAME"
     const val MSG_PLAYER_ACTION = "PLAYER_ACTION"
     const val MSG_SYNC_STATE = "SYNC_STATE"
+    const val MSG_UPDATE_ROOM_RULES = "UPDATE_ROOM_RULES"
+    const val MSG_RULES_UPDATED = "RULES_UPDATED"
+    const val MSG_PLAYER_DISCONNECTED = "PLAYER_DISCONNECTED"
+    const val MSG_PLAYER_RECONNECTED = "PLAYER_RECONNECTED"
     const val MSG_PING = "PING"
     const val MSG_PONG = "PONG"
     const val MSG_LEAVE = "LEAVE"
@@ -83,10 +87,12 @@ object UnoNetworkProtocol {
         )
     }
 
-    // Player serialization
-    fun playerToJson(player: Player): JSONObject {
+    // Player serialization (Secured: private cards never sent to opponents)
+    fun playerToJson(player: Player, includePrivateHand: Boolean = true): JSONObject {
         val handArray = JSONArray()
-        player.hand.forEach { handArray.put(cardToJson(it)) }
+        if (includePrivateHand) {
+            player.hand.forEach { handArray.put(cardToJson(it)) }
+        }
 
         return JSONObject().apply {
             put("id", player.id)
@@ -102,6 +108,7 @@ object UnoNetworkProtocol {
             put("isConnected", player.isConnected)
             put("isReconnecting", player.isReconnecting)
             if (player.finishRank != null) put("finishRank", player.finishRank)
+            put("cardCount", player.cardCount)
             put("hand", handArray)
         }
     }
@@ -115,12 +122,15 @@ object UnoNetworkProtocol {
             }
         }
 
+        val networkCardCount = if (json.has("cardCount")) json.getInt("cardCount") else null
+
         return Player(
             id = json.getString("id"),
             name = json.getString("name"),
             avatar = json.getString("avatar"),
             isHuman = json.optBoolean("isHuman", true),
             hand = hand,
+            networkCardCount = networkCardCount,
             hasCalledUno = json.optBoolean("hasCalledUno", false),
             canBePenalizedUno = json.optBoolean("canBePenalizedUno", false),
             score = json.optInt("score", 0),
@@ -160,10 +170,10 @@ object UnoNetworkProtocol {
         )
     }
 
-    // Full Game State serialization
+    // Full Game State serialization (Raw, for host local engine)
     fun stateToJson(state: UnoGameState): JSONObject {
         val playersArray = JSONArray()
-        state.players.forEach { playersArray.put(playerToJson(it)) }
+        state.players.forEach { playersArray.put(playerToJson(it, includePrivateHand = true)) }
 
         val discardArray = JSONArray()
         state.discardPile.forEach { discardArray.put(cardToJson(it)) }
@@ -194,7 +204,53 @@ object UnoNetworkProtocol {
             put("discardPile", discardArray)
             put("rules", rulesToJson(state.rules))
             put("logs", logsArray)
-            state.winner?.let { put("winner", playerToJson(it)) }
+            state.winner?.let { put("winner", playerToJson(it, includePrivateHand = true)) }
+        }
+    }
+
+    // Personalized Game State: Opponent hands are strictly stripped server-side
+    fun stateToJsonForPlayer(state: UnoGameState, targetPlayerId: String): JSONObject {
+        val playersArray = JSONArray()
+        state.players.forEach { p ->
+            val isTarget = (p.id == targetPlayerId)
+            playersArray.put(playerToJson(p, includePrivateHand = isTarget))
+        }
+
+        val discardArray = JSONArray()
+        state.discardPile.forEach { discardArray.put(cardToJson(it)) }
+
+        val logsArray = JSONArray()
+        state.logs.takeLast(10).forEach {
+            logsArray.put(JSONObject().apply {
+                put("id", it.id)
+                put("text", it.text)
+                put("isAlert", it.isAlert)
+            })
+        }
+
+        return JSONObject().apply {
+            put("currentPlayerIndex", state.currentPlayerIndex)
+            put("direction", state.direction.name)
+            put("activeColor", state.activeColor.name)
+            put("pendingDrawStack", state.pendingDrawStack)
+            put("gamePhase", state.gamePhase.name)
+            put("mode", state.mode.name)
+            put("roundNumber", state.roundNumber)
+            put("roomCode", state.roomCode ?: "")
+            put("drawPileSize", state.drawPile.size)
+            put("drawnThisTurn", state.drawnThisTurn)
+            state.cardDrawnThisTurn?.let {
+                val currentP = state.currentPlayer
+                if (currentP?.id == targetPlayerId) {
+                    put("cardDrawnThisTurn", cardToJson(it))
+                }
+            }
+            put("unplayableDrawnNotice", state.unplayableDrawnNotice ?: "")
+            put("players", playersArray)
+            put("discardPile", discardArray)
+            put("rules", rulesToJson(state.rules))
+            put("logs", logsArray)
+            state.winner?.let { put("winner", playerToJson(it, includePrivateHand = (it.id == targetPlayerId))) }
         }
     }
 

@@ -110,6 +110,7 @@ data class Player(
     val avatar: String,
     val isHuman: Boolean,
     val hand: List<UnoCard> = emptyList(),
+    val networkCardCount: Int? = null,
     val hasCalledUno: Boolean = false,
     val canBePenalizedUno: Boolean = false,
     val score: Int = 0,
@@ -120,7 +121,7 @@ data class Player(
     val isReconnecting: Boolean = false,
     val finishRank: Int? = null
 ) {
-    val cardCount: Int get() = hand.size
+    val cardCount: Int get() = networkCardCount ?: hand.size
     val isFinished: Boolean get() = finishRank != null || isEliminated
 }
 
