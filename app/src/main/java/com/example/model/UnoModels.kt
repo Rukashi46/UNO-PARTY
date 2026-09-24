@@ -161,6 +161,11 @@ enum class CustomWildEffect(val displayName: String, val description: String) {
     EVERYONE_PLUS_FOUR("➕ Everyone +4", "Every other player receives 4 cards (and absorbs active stack if next)")
 }
 
+enum class DeckType(val label: String, val cardCount: Int, val description: String) {
+    CLASSIC_108("Classic 108-card deck", 108, "24 Action (Skip, Reverse, Draw Two) + 8 Wild (Wild, Wild Draw Four)"),
+    MODERN_112("Modern 112-card deck", 112, "Adds 1 Wild Swap/Shuffle Hands + 3 Customizable Wild cards")
+}
+
 data class GameRules(
     val playerCount: Int = 4,
     val initialCardsPerPlayer: Int = 7,
@@ -180,7 +185,9 @@ data class GameRules(
     val hapticsEnabled: Boolean = true,
     val soundEnabled: Boolean = true,
     val includeCustomWilds: Boolean = true,
-    val gameEndingMode: GameEndingMode = GameEndingMode.FIRST_PLAYER_WINS
+    val gameEndingMode: GameEndingMode = GameEndingMode.FIRST_PLAYER_WINS,
+    val noMercy: Boolean = false,
+    val deckType: DeckType = DeckType.MODERN_112
 ) {
     companion object {
         val OFFICIAL_RULES = GameRules(
@@ -193,7 +200,9 @@ data class GameRules(
             forcePlay = false,
             wildDrawFourChallenge = true,
             mercyRule = false,
-            includeCustomWilds = false
+            includeCustomWilds = false,
+            noMercy = false,
+            deckType = DeckType.CLASSIC_108
         )
 
         val SPICY_HOUSE_RULES = GameRules(
@@ -206,7 +215,25 @@ data class GameRules(
             forcePlay = false,
             wildDrawFourChallenge = false,
             mercyRule = true,
-            includeCustomWilds = true
+            includeCustomWilds = true,
+            noMercy = false,
+            deckType = DeckType.MODERN_112
+        )
+
+        val NO_MERCY = GameRules(
+            stackingDrawTwos = true,
+            stackingDrawFours = true,
+            stackingDrawFourOnTwo = true,
+            sevenZeroRule = true,
+            jumpInRule = true,
+            drawUntilPlayable = false,
+            forcePlay = true,
+            wildDrawFourChallenge = false,
+            mercyRule = true,
+            mercyLimit = 25,
+            includeCustomWilds = true,
+            noMercy = true,
+            deckType = DeckType.MODERN_112
         )
 
         val STACK_ATTACK = GameRules(
@@ -219,7 +246,9 @@ data class GameRules(
             forcePlay = false,
             wildDrawFourChallenge = false,
             mercyRule = true,
-            includeCustomWilds = true
+            includeCustomWilds = true,
+            noMercy = false,
+            deckType = DeckType.MODERN_112
         )
 
         val CHAOS_PARTY = GameRules(
@@ -232,7 +261,9 @@ data class GameRules(
             forcePlay = false,
             wildDrawFourChallenge = false,
             mercyRule = true,
-            includeCustomWilds = true
+            includeCustomWilds = true,
+            noMercy = true,
+            deckType = DeckType.MODERN_112
         )
     }
 }

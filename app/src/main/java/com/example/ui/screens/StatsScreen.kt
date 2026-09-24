@@ -298,6 +298,26 @@ private fun MatchRecordCard(record: MatchRecord) {
                     fontSize = 11.sp
                 )
             }
+
+            if (record.roundScore > 0 || record.totalRounds > 0) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "Score: +${record.roundScore} pts",
+                        color = Color(0xFFFFD54F),
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "${record.totalRounds} ${if (record.totalRounds == 1) "round" else "rounds"}",
+                        color = Color(0xFF94A3B8),
+                        fontSize = 11.sp
+                    )
+                }
+            }
         }
     }
 }

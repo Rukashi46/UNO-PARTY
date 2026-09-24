@@ -2,6 +2,8 @@ package com.example.network
 
 import com.example.engine.UnoGameState
 import com.example.model.CustomWildEffect
+import com.example.model.DeckType
+import com.example.model.GameEndingMode
 import com.example.model.GameLogEntry
 import com.example.model.GameMode
 import com.example.model.GamePhase
@@ -153,7 +155,20 @@ object UnoNetworkProtocol {
             put("stackingDrawFourOnTwo", rules.stackingDrawFourOnTwo)
             put("sevenZeroRule", rules.sevenZeroRule)
             put("jumpInRule", rules.jumpInRule)
+            put("drawUntilPlayable", rules.drawUntilPlayable)
+            put("forcePlay", rules.forcePlay)
+            put("wildDrawFourChallenge", rules.wildDrawFourChallenge)
+            put("mercyRule", rules.mercyRule)
+            put("mercyLimit", rules.mercyLimit)
+            put("unoPenaltyCards", rules.unoPenaltyCards)
+            put("targetScore", rules.targetScore)
+            put("botSpeedMs", rules.botSpeedMs)
+            put("hapticsEnabled", rules.hapticsEnabled)
+            put("soundEnabled", rules.soundEnabled)
             put("includeCustomWilds", rules.includeCustomWilds)
+            put("gameEndingMode", rules.gameEndingMode.name)
+            put("noMercy", rules.noMercy)
+            put("deckType", rules.deckType.name)
         }
     }
 
@@ -163,10 +178,23 @@ object UnoNetworkProtocol {
             initialCardsPerPlayer = json.optInt("initialCardsPerPlayer", 7),
             stackingDrawTwos = json.optBoolean("stackingDrawTwos", true),
             stackingDrawFours = json.optBoolean("stackingDrawFours", true),
-            stackingDrawFourOnTwo = json.optBoolean("stackingDrawFourOnTwo", true),
+            stackingDrawFourOnTwo = json.optBoolean("stackingDrawFourOnTwo", false),
             sevenZeroRule = json.optBoolean("sevenZeroRule", false),
             jumpInRule = json.optBoolean("jumpInRule", true),
-            includeCustomWilds = json.optBoolean("includeCustomWilds", true)
+            drawUntilPlayable = json.optBoolean("drawUntilPlayable", false),
+            forcePlay = json.optBoolean("forcePlay", false),
+            wildDrawFourChallenge = json.optBoolean("wildDrawFourChallenge", false),
+            mercyRule = json.optBoolean("mercyRule", false),
+            mercyLimit = json.optInt("mercyLimit", 25),
+            unoPenaltyCards = json.optInt("unoPenaltyCards", 2),
+            targetScore = json.optInt("targetScore", 250),
+            botSpeedMs = json.optLong("botSpeedMs", 900L),
+            hapticsEnabled = json.optBoolean("hapticsEnabled", true),
+            soundEnabled = json.optBoolean("soundEnabled", true),
+            includeCustomWilds = json.optBoolean("includeCustomWilds", true),
+            gameEndingMode = runCatching { GameEndingMode.valueOf(json.optString("gameEndingMode", "FIRST_PLAYER_WINS")) }.getOrDefault(GameEndingMode.FIRST_PLAYER_WINS),
+            noMercy = json.optBoolean("noMercy", false),
+            deckType = runCatching { DeckType.valueOf(json.optString("deckType", "MODERN_112")) }.getOrDefault(DeckType.MODERN_112)
         )
     }
 

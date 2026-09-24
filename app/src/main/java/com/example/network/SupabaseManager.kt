@@ -33,7 +33,7 @@ object SupabaseManager {
         .build()
 
     // Configured via BuildConfig or fallback system properties
-    private val supabaseUrl: String by lazy {
+    val supabaseUrl: String by lazy {
         try {
             // Check for SUPABASE_URL or EXPO_PUBLIC_SUPABASE_URL via reflection from BuildConfig
             val buildConfigClass = BuildConfig::class.java
@@ -45,7 +45,7 @@ object SupabaseManager {
         }
     }
 
-    private val supabaseKey: String by lazy {
+    val supabaseKey: String by lazy {
         try {
             val buildConfigClass = BuildConfig::class.java
             val keyField = runCatching { buildConfigClass.getField("SUPABASE_KEY").get(null) as? String }.getOrNull()
@@ -174,6 +174,53 @@ object SupabaseManager {
     }
 
     /**
+     * Updates rules for an active room in Supabase `rooms` table.
+     */
+    suspend fun updateRoomRules(
+        roomCode: String,
+        rules: GameRules
+    ): Boolean = withContext(Dispatchers.IO) {
+        if (!isConfigured) return@withContext false
+
+        try {
+            val rulesJson = JSONObject().apply {
+                put("stackingDrawTwos", rules.stackingDrawTwos)
+                put("stackingDrawFours", rules.stackingDrawFours)
+                put("stackingDrawFourOnTwo", rules.stackingDrawFourOnTwo)
+                put("jumpInRule", rules.jumpInRule)
+                put("sevenZeroRule", rules.sevenZeroRule)
+                put("drawUntilPlayable", rules.drawUntilPlayable)
+                put("forcePlay", rules.forcePlay)
+                put("mercyRule", rules.mercyRule)
+                put("noMercy", rules.noMercy)
+                put("includeCustomWilds", rules.includeCustomWilds)
+                put("deckType", rules.deckType.name)
+            }
+
+            val body = JSONObject().apply {
+                put("rules", rulesJson)
+                put("updated_at", System.currentTimeMillis())
+            }
+
+            val request = Request.Builder()
+                .url("$supabaseUrl/rest/v1/rooms?room_code=eq.$roomCode")
+                .header("apikey", supabaseKey)
+                .header("Authorization", "Bearer $supabaseKey")
+                .header("Content-Type", "application/json")
+                .patch(body.toString().toRequestBody(JSON_MEDIA))
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                Log.d(TAG, "[ROOM] updateRoomRules code=${response.code} room=$roomCode")
+                return@withContext response.isSuccessful
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "[ROOM] Failed to update room rules in Supabase: ${e.message}")
+        }
+        false
+    }
+
+    /**
      * Looks up room details by room_code from Supabase `rooms` table.
      */
     suspend fun lookupRoom(roomCode: String): CloudRoom? = withContext(Dispatchers.IO) {
@@ -240,7 +287,7 @@ object SupabaseManager {
     }
 
     /**
-     * Records match history in Supabase `game_history` table.
+     * Records match history in Supabase `matches` table (with fallback to `game_history`).
      */
     suspend fun recordHistory(
         roomCode: String,
@@ -253,28 +300,138 @@ object SupabaseManager {
         if (!isConfigured) return@withContext
 
         try {
-            val body = JSONObject().apply {
+            // First attempt to write to standard 'matches' table
+            val matchBody = JSONObject().apply {
                 put("room_code", roomCode)
                 if (!winnerId.isNullOrBlank()) put("winner_id", winnerId)
                 put("winner_name", winnerName)
                 put("player_count", playerCount)
                 put("mode", mode)
                 put("rounds_played", rounds)
+                put("finished_at", "now()")
             }
 
             val request = Request.Builder()
-                .url("$supabaseUrl/rest/v1/game_history")
+                .url("$supabaseUrl/rest/v1/matches")
                 .header("apikey", supabaseKey)
                 .header("Authorization", "Bearer $supabaseKey")
                 .header("Content-Type", "application/json")
+                .post(matchBody.toString().toRequestBody(JSON_MEDIA))
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                Log.d(TAG, "[GAME] recordHistory to matches code=${response.code}")
+                if (!response.isSuccessful) {
+                    // Fallback to game_history if table is named game_history
+                    val fallbackBody = JSONObject().apply {
+                        put("room_code", roomCode)
+                        if (!winnerId.isNullOrBlank()) put("winner_id", winnerId)
+                        put("winner_name", winnerName)
+                        put("player_count", playerCount)
+                        put("mode", mode)
+                        put("rounds_played", rounds)
+                    }
+                    val fallbackReq = Request.Builder()
+                        .url("$supabaseUrl/rest/v1/game_history")
+                        .header("apikey", supabaseKey)
+                        .header("Authorization", "Bearer $supabaseKey")
+                        .header("Content-Type", "application/json")
+                        .post(fallbackBody.toString().toRequestBody(JSON_MEDIA))
+                        .build()
+                    client.newCall(fallbackReq).execute().use { fbResp ->
+                        Log.d(TAG, "[GAME] fallback recordHistory to game_history code=${fbResp.code}")
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "[GAME] Failed to record history in Supabase: ${e.message}")
+        }
+    }
+
+    /**
+     * Upsert personal app settings in Supabase `user_preferences` table.
+     */
+    suspend fun syncUserPreferences(
+        playerId: String,
+        sound: Boolean,
+        music: Boolean = true,
+        haptics: Boolean = true,
+        animations: Boolean = true,
+        theme: String = "DARK"
+    ) = withContext(Dispatchers.IO) {
+        if (!isConfigured) return@withContext
+
+        try {
+            val body = JSONObject().apply {
+                put("player_id", playerId)
+                put("sound", sound)
+                put("music", music)
+                put("haptics", haptics)
+                put("animations", animations)
+                put("theme", theme)
+                put("updated_at", "now()")
+            }
+
+            val request = Request.Builder()
+                .url("$supabaseUrl/rest/v1/user_preferences")
+                .header("apikey", supabaseKey)
+                .header("Authorization", "Bearer $supabaseKey")
+                .header("Content-Type", "application/json")
+                .header("Prefer", "resolution=merge-duplicates")
                 .post(body.toString().toRequestBody(JSON_MEDIA))
                 .build()
 
             client.newCall(request).execute().use { response ->
-                Log.d(TAG, "[GAME] recordHistory code=${response.code}")
+                Log.d(TAG, "[PREFS] syncUserPreferences code=${response.code}")
             }
         } catch (e: Exception) {
-            Log.w(TAG, "[GAME] Failed to record history in Supabase: ${e.message}")
+            Log.w(TAG, "[PREFS] Failed to sync user preferences: ${e.message}")
+        }
+    }
+
+    /**
+     * Upsert personal rule preset in Supabase `rule_presets` table.
+     */
+    suspend fun syncRulePreset(
+        playerId: String,
+        presetName: String,
+        rules: GameRules
+    ) = withContext(Dispatchers.IO) {
+        if (!isConfigured) return@withContext
+
+        try {
+            val rulesJson = JSONObject().apply {
+                put("stackingDrawTwos", rules.stackingDrawTwos)
+                put("stackingDrawFours", rules.stackingDrawFours)
+                put("jumpInRule", rules.jumpInRule)
+                put("sevenZeroRule", rules.sevenZeroRule)
+                put("drawUntilPlayable", rules.drawUntilPlayable)
+                put("forcePlay", rules.forcePlay)
+                put("noMercy", rules.noMercy)
+                put("deckType", rules.deckType.name)
+            }
+
+            val body = JSONObject().apply {
+                put("player_id", playerId)
+                put("name", presetName)
+                put("rules", rulesJson)
+                put("updated_at", "now()")
+            }
+
+            val request = Request.Builder()
+                .url("$supabaseUrl/rest/v1/rule_presets")
+                .header("apikey", supabaseKey)
+                .header("Authorization", "Bearer $supabaseKey")
+                .header("Content-Type", "application/json")
+                .header("Prefer", "resolution=merge-duplicates")
+                .post(body.toString().toRequestBody(JSON_MEDIA))
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                Log.d(TAG, "[PRESET] syncRulePreset code=${response.code}")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "[PRESET] Failed to sync rule preset: ${e.message}")
         }
     }
 }

@@ -76,7 +76,12 @@ class UnoWlanClient(
     private var lastPort: Int = UnoNetworkProtocol.DEFAULT_PORT
     private var targetRoomCode: String = ""
 
-    fun startDiscovery() {
+    private var currentLocalPlayerId: String = ""
+
+    fun startDiscovery(myPlayerId: String = "") {
+        if (myPlayerId.isNotBlank()) {
+            currentLocalPlayerId = myPlayerId
+        }
         discoveryJob?.cancel()
         discoveryJob = scope.launch(Dispatchers.IO) {
             var udpSocket: DatagramSocket? = null
@@ -95,15 +100,23 @@ class UnoWlanClient(
                     if (message.startsWith("UNO_ROOM|")) {
                         val parts = message.split("|")
                         if (parts.size >= 6) {
+                            val discoveredRoomCode = parts[1]
                             val hostPlayerId = if (parts.size >= 7) parts[6] else ""
-                            val myId = localPlayer?.id ?: ""
-                            if (myId.isNotEmpty() && hostPlayerId == myId) {
-                                // Do not show host's own room in Wi-Fi discovery on the host device
+                            val myId = currentLocalPlayerId.ifBlank { localPlayer?.id ?: "" }
+
+                            // Do NOT show host's own room on host device
+                            if (myId.isNotEmpty() && hostPlayerId.isNotEmpty() && hostPlayerId == myId) {
+                                continue
+                            }
+
+                            // Do NOT show the room if client is already joined or currently in this room
+                            val activeRoom = _currentRoomCode.value
+                            if (activeRoom.isNotEmpty() && discoveredRoomCode.equals(activeRoom, ignoreCase = true)) {
                                 continue
                             }
 
                             val room = DiscoveredRoom(
-                                roomCode = parts[1],
+                                roomCode = discoveredRoomCode,
                                 hostName = parts[2],
                                 hostIp = parts[3],
                                 port = parts[4].toIntOrNull() ?: UnoNetworkProtocol.DEFAULT_PORT,

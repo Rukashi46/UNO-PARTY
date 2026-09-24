@@ -7,9 +7,14 @@ import java.util.UUID
 
 object UnoDeck {
 
-    fun generateDeck(deckCount: Int = 1, includeCustomWilds: Boolean = true): MutableList<UnoCard> {
+    fun generateDeck(
+        deckCount: Int = 1,
+        includeCustomWilds: Boolean = true,
+        deckType: com.example.model.DeckType = if (includeCustomWilds) com.example.model.DeckType.MODERN_112 else com.example.model.DeckType.CLASSIC_108
+    ): MutableList<UnoCard> {
         val cards = mutableListOf<UnoCard>()
         val playableColors = listOf(UnoColor.RED, UnoColor.YELLOW, UnoColor.GREEN, UnoColor.BLUE)
+        val shouldIncludeExtraCards = includeCustomWilds && (deckType == com.example.model.DeckType.MODERN_112)
 
         for (d in 0 until deckCount) {
             for (color in playableColors) {
@@ -40,8 +45,8 @@ object UnoDeck {
         }
 
         // Add EXACTLY 3 Custom Wild cards (3 × Custom Wild ⚡) and 1 Shuffle Hands (1 × Shuffle Hands 🔀)
-        // Matching official physical card deck: exactly 4 special cards
-        if (includeCustomWilds) {
+        // Matching official physical card deck: exactly 4 extra cards for Modern 112-card deck
+        if (shouldIncludeExtraCards) {
             for (i in 0 until 3) {
                 cards.add(UnoCard(id = UUID.randomUUID().toString(), color = UnoColor.WILD, value = UnoValue.CUSTOM_WILD))
             }

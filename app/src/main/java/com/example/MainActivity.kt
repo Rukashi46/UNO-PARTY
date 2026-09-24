@@ -51,6 +51,7 @@ fun UnoAppRoot(
 ) {
     val gameState by viewModel.gameState.collectAsStateWithLifecycle()
     val activeRules by viewModel.activeRules.collectAsStateWithLifecycle()
+    val networkRole by viewModel.networkRole.collectAsStateWithLifecycle()
     val recentMatches by viewModel.recentMatches.collectAsStateWithLifecycle(initialValue = emptyList())
     val playerStats by viewModel.playerStats.collectAsStateWithLifecycle(initialValue = emptyList())
 
@@ -84,6 +85,7 @@ fun UnoAppRoot(
             GameScreen(
                 gameState = gameState,
                 localPlayerId = viewModel.currentUserId,
+                isHost = (networkRole == com.example.viewmodel.NetworkRole.HOST || networkRole == com.example.viewmodel.NetworkRole.OFFLINE),
                 onPlayCard = { card -> viewModel.playCard(card) },
                 onDrawCard = { viewModel.drawCard() },
                 onPassTurn = { viewModel.passTurn() },
@@ -95,6 +97,8 @@ fun UnoAppRoot(
                 onSelectSevenSwapTarget = { targetIdx -> viewModel.chooseSevenSwapTarget(targetIdx) },
                 onTogglePassAndPlayReveal = { viewModel.togglePassAndPlayHandVisibility() },
                 onNextRound = { viewModel.nextRound() },
+                onPlayUnplayableCard = { viewModel.playUnplayableCardFeedback() },
+                onUpdateRules = { updatedRules -> viewModel.updateRules(updatedRules) },
                 onQuit = {
                     viewModel.quitToLobby()
                     currentScreen = AppScreen.HOME
@@ -106,6 +110,7 @@ fun UnoAppRoot(
             BackHandler { currentScreen = AppScreen.HOME }
             RulesScreen(
                 currentRules = activeRules,
+                isHost = (networkRole == com.example.viewmodel.NetworkRole.HOST || networkRole == com.example.viewmodel.NetworkRole.OFFLINE),
                 onSaveRules = { updatedRules ->
                     viewModel.updateRules(updatedRules)
                 },

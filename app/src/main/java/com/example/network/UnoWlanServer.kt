@@ -3,6 +3,7 @@ package com.example.network
 import android.util.Log
 import com.example.engine.UnoGameEngine
 import com.example.engine.UnoGameState
+import com.example.model.GameLogEntry
 import com.example.model.GameMode
 import com.example.model.GamePhase
 import com.example.model.GameRules
@@ -419,11 +420,17 @@ class UnoWlanServer(
     }
 
     fun updateRules(newRules: GameRules) {
-        if (currentGameState != null && currentGameState?.gamePhase != GamePhase.NOT_STARTED) {
-            Log.w(tag, "Rules cannot be modified after match starts!")
-            return
-        }
         serverRules = newRules
+        // If match is active, update rules on current game state and broadcast state update to all players
+        val current = currentGameState
+        if (current != null && current.gamePhase != GamePhase.NOT_STARTED) {
+            val updatedState = current.copy(
+                rules = newRules,
+                logs = current.logs + GameLogEntry(text = "👑 Host updated House Rules", isAlert = true)
+            )
+            updateAndBroadcastHostState(updatedState)
+        }
+
         val json = JSONObject().apply {
             put("type", UnoNetworkProtocol.MSG_RULES_UPDATED)
             put("rules", UnoNetworkProtocol.rulesToJson(newRules))

@@ -3,8 +3,12 @@ package com.example.viewmodel
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.data.MatchEntity
 import com.example.data.MatchRecord
+import com.example.data.MatchScoreRecord
 import com.example.data.PlayerStat
+import com.example.data.RoomRecordEntity
+import com.example.data.SupabaseLobbyRepository
 import com.example.data.UnoDatabase
 import com.example.data.UnoRepository
 import com.example.data.UserPreferencesManager
@@ -13,6 +17,7 @@ import com.example.engine.UnoDeck
 import com.example.engine.UnoGameEngine
 import com.example.engine.UnoGameState
 import com.example.model.CustomWildEffect
+import com.example.model.GameLogEntry
 import com.example.model.GameMode
 import com.example.model.GamePhase
 import com.example.model.GameRules
@@ -26,6 +31,7 @@ import com.example.network.UnoNetworkProtocol
 import com.example.network.UnoWlanClient
 import com.example.network.UnoWlanServer
 import com.example.util.GameEffects
+import com.example.util.SoundManager
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -44,6 +50,7 @@ enum class NetworkRole {
 class UnoViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repository: UnoRepository
+    val supabaseLobbyRepository: SupabaseLobbyRepository
     private val effects: GameEffects
 
     // Network Server & Client
@@ -82,10 +89,34 @@ class UnoViewModel(application: Application) : AndroidViewModel(application) {
     val networkErrorMessage: StateFlow<String?> = wlanClient.errorMessage
     val currentUserId: String get() = userPrefs.getPlayerId()
 
+    val soundManager: SoundManager = SoundManager.getInstance(application)
+
     init {
         val db = UnoDatabase.getDatabase(application)
         repository = UnoRepository(db.unoDao())
+        supabaseLobbyRepository = SupabaseLobbyRepository(repository, scope = viewModelScope)
         effects = GameEffects(application)
+
+        // Load persisted game configuration from Room database
+        viewModelScope.launch {
+            repository.loadGameConfig()?.let { savedRules ->
+                _activeRules.value = savedRules
+                soundManager.isSoundEnabled = savedRules.soundEnabled
+            }
+        }
+
+        // Observe Supabase real-time lobby state updates
+        viewModelScope.launch {
+            supabaseLobbyRepository.lobbyState.collect { sState ->
+                if (_networkRole.value != NetworkRole.OFFLINE && sState.players.isNotEmpty()) {
+                    _lobbyPlayers.value = sState.players
+                }
+                // If client, keep rules synchronized with host's Supabase state
+                if (_networkRole.value == NetworkRole.CLIENT && sState.rules != _activeRules.value) {
+                    _activeRules.value = sState.rules
+                }
+            }
+        }
 
         // Observe server players
         viewModelScope.launch {
@@ -162,12 +193,37 @@ class UnoViewModel(application: Application) : AndroidViewModel(application) {
     private var botTurnJob: Job? = null
     private var unplayableCardJob: Job? = null
 
-    fun updateRules(newRules: GameRules) {
+    fun updateRules(newRules: GameRules, configName: String = "Custom") {
         if (_networkRole.value == NetworkRole.CLIENT) {
             // Clients cannot edit authoritative room rules
+            viewModelScope.launch {
+                supabaseLobbyRepository.errorMessage.replayCache
+            }
             return
         }
         _activeRules.value = newRules
+        soundManager.isSoundEnabled = newRules.soundEnabled
+
+        // If a game is active locally or as host, update the game state rules immediately
+        if (_gameState.value.gamePhase != GamePhase.NOT_STARTED) {
+            _gameState.update { current ->
+                current.copy(
+                    rules = newRules,
+                    logs = current.logs + GameLogEntry(text = "👑 House Rules updated", isAlert = true)
+                )
+            }
+        }
+
+        viewModelScope.launch {
+            val currentRoom = _gameState.value.roomCode ?: _currentRoomCode.value
+            supabaseLobbyRepository.updateMatchSettings(
+                roomCode = currentRoom,
+                requestingPlayerId = currentUserId,
+                newRules = newRules,
+                configName = configName
+            )
+        }
+
         if (_networkRole.value == NetworkRole.HOST) {
             wlanServer.updateRules(newRules)
         }
@@ -206,17 +262,13 @@ class UnoViewModel(application: Application) : AndroidViewModel(application) {
         _lobbyPlayers.value = listOf(hostPlayer)
         wlanServer.startServer(roomCode, hostPlayer)
 
-        if (SupabaseManager.isConfigured) {
-            viewModelScope.launch {
-                SupabaseManager.registerRoom(
-                    roomCode = roomCode,
-                    hostPlayerId = hostPlayer.id,
-                    mode = "ONLINE_ROOM",
-                    rules = _activeRules.value,
-                    hostAddress = localIp
-                )
-            }
-        }
+        supabaseLobbyRepository.startHosting(
+            roomCode = roomCode,
+            hostPlayer = hostPlayer,
+            mode = "ONLINE_ROOM",
+            rules = _activeRules.value,
+            hostAddress = localIp
+        )
     }
 
     fun joinRoom(
@@ -239,10 +291,19 @@ class UnoViewModel(application: Application) : AndroidViewModel(application) {
         )
 
         wlanClient.resolveAndConnect(hostAddressOrCode, clientPlayer)
+
+        // If a room code was entered, synchronize via Supabase repository as well
+        val resolvedCode = if (hostAddressOrCode.contains(":") || hostAddressOrCode.split(".").size == 4) {
+            RoomCodeUtil.encodeIpToRoomCode(hostAddressOrCode.substringBefore(":"))
+        } else {
+            hostAddressOrCode.uppercase().trim()
+        }
+        _currentRoomCode.value = resolvedCode
+        supabaseLobbyRepository.joinRoom(resolvedCode, clientPlayer)
     }
 
     fun startDiscovery() {
-        wlanClient.startDiscovery()
+        wlanClient.startDiscovery(userPrefs.getPlayerId())
     }
 
     fun stopDiscovery() {
@@ -250,12 +311,8 @@ class UnoViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun leaveNetwork() {
-        if (_networkRole.value == NetworkRole.HOST && SupabaseManager.isConfigured) {
-            val code = _currentRoomCode.value
-            viewModelScope.launch {
-                SupabaseManager.closeRoom(code)
-            }
-        }
+        val code = _currentRoomCode.value
+        supabaseLobbyRepository.leaveLobby(code, userPrefs.getPlayerId())
         wlanServer.stopServer()
         wlanClient.disconnect()
         wlanClient.stopDiscovery()
@@ -267,6 +324,10 @@ class UnoViewModel(application: Application) : AndroidViewModel(application) {
         botTurnJob?.cancel()
         unplayableCardJob?.cancel()
         _activeRules.value = rules
+
+        if (rules.soundEnabled) {
+            soundManager.playCardDealSound()
+        }
 
         if (mode == GameMode.ONLINE_ROOM || mode == GameMode.WLAN_MULTIPLAYER) {
             if (_networkRole.value == NetworkRole.HOST) {
@@ -292,6 +353,15 @@ class UnoViewModel(application: Application) : AndroidViewModel(application) {
         checkTriggerBotTurn(state)
     }
 
+    fun playUnplayableCardFeedback() {
+        if (_activeRules.value.soundEnabled) {
+            soundManager.playInvalidCardSound()
+        }
+        if (_activeRules.value.hapticsEnabled) {
+            effects.playCardHaptic()
+        }
+    }
+
     fun playCard(card: UnoCard) {
         val state = _gameState.value
         val playerIdx = state.currentPlayerIndex
@@ -301,6 +371,9 @@ class UnoViewModel(application: Application) : AndroidViewModel(application) {
         if (_networkRole.value == NetworkRole.CLIENT) {
             // Only send action if it is the client's turn
             if (playerIdx == myPlayerIndex) {
+                if (state.rules.soundEnabled) {
+                    soundManager.playCardPlaySound()
+                }
                 wlanClient.sendAction(actionType = UnoNetworkProtocol.ACTION_PLAY_CARD, card = card)
             }
             return
@@ -308,6 +381,9 @@ class UnoViewModel(application: Application) : AndroidViewModel(application) {
 
         if (!player.isHuman && state.mode != GameMode.ALL_BOTS) return
 
+        if (state.rules.soundEnabled) {
+            soundManager.playCardPlaySound()
+        }
         if (state.rules.hapticsEnabled) {
             effects.playCardHaptic()
         }
@@ -375,6 +451,9 @@ class UnoViewModel(application: Application) : AndroidViewModel(application) {
 
         if (_networkRole.value == NetworkRole.CLIENT) {
             if (playerIdx == myPlayerIndex) {
+                if (state.rules.soundEnabled) {
+                    soundManager.playDrawCardSound()
+                }
                 wlanClient.sendAction(actionType = UnoNetworkProtocol.ACTION_DRAW_CARD)
             }
             return
@@ -382,6 +461,9 @@ class UnoViewModel(application: Application) : AndroidViewModel(application) {
 
         if (!player.isHuman && state.mode != GameMode.ALL_BOTS) return
 
+        if (state.rules.soundEnabled) {
+            soundManager.playDrawCardSound()
+        }
         if (state.rules.hapticsEnabled) {
             effects.drawCardHaptic()
         }
@@ -444,6 +526,9 @@ class UnoViewModel(application: Application) : AndroidViewModel(application) {
     fun callUno() {
         val state = _gameState.value
         val playerIdx = state.currentPlayerIndex
+        if (state.rules.soundEnabled) {
+            soundManager.playUnoCallSound()
+        }
         if (state.rules.hapticsEnabled) {
             effects.unoCallHaptic()
         }
@@ -565,11 +650,50 @@ class UnoViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun handleGameOver(state: UnoGameState) {
         val winner = state.winner ?: return
+        if (state.rules.soundEnabled) {
+            soundManager.playWinSound()
+        }
         if (state.rules.hapticsEnabled) {
             effects.winHaptic()
         }
 
         viewModelScope.launch {
+            val matchId = java.util.UUID.randomUUID().toString()
+            val matchEntity = MatchEntity(
+                matchId = matchId,
+                roomCode = state.roomCode,
+                gameMode = state.mode.name,
+                gameEndingMode = state.rules.gameEndingMode.name,
+                playerCount = state.players.size,
+                winnerId = winner.id,
+                winnerName = winner.name,
+                noMercy = state.rules.noMercy,
+                deckType = state.rules.deckType.name,
+                startedAt = System.currentTimeMillis() - (state.roundNumber * 60000L),
+                finishedAt = System.currentTimeMillis(),
+                rulesSummary = "${state.players.size}P • ${state.rules.deckType.label} • ${if (state.rules.noMercy) "No Mercy" else "Standard"}"
+            )
+            repository.saveMatchEntity(matchEntity)
+
+            val scoreRecords = state.players.mapIndexed { idx, p ->
+                MatchScoreRecord(
+                    matchId = matchId,
+                    roomCode = state.roomCode,
+                    playerId = p.id,
+                    playerName = p.name,
+                    avatar = p.avatar,
+                    isHuman = p.isHuman,
+                    isWinner = p.id == winner.id,
+                    score = p.score,
+                    placement = p.finishRank ?: if (p.id == winner.id) 1 else (idx + 1),
+                    finalCards = p.hand.size,
+                    cardsPlayed = 0,
+                    unosCalled = if (p.hasCalledUno) 1 else 0,
+                    unosCaught = 0
+                )
+            }
+            repository.saveMatchScores(scoreRecords)
+
             repository.saveMatch(
                 MatchRecord(
                     playerCount = state.players.size,

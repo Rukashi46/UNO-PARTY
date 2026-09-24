@@ -51,6 +51,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.model.DeckType
 import com.example.model.GameEndingMode
 import com.example.model.GameRules
 
@@ -58,6 +59,7 @@ import com.example.model.GameRules
 @Composable
 fun RulesScreen(
     currentRules: GameRules,
+    isHost: Boolean = true,
     onSaveRules: (GameRules) -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier
@@ -68,7 +70,7 @@ fun RulesScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Game Rules & Presets", fontWeight = FontWeight.Bold) },
+                title = { Text(if (isHost) "Game Rules & Presets" else "Match Rules (Host Only)", fontWeight = FontWeight.Bold) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(
@@ -79,17 +81,19 @@ fun RulesScreen(
                     }
                 },
                 actions = {
-                    IconButton(
-                        onClick = {
-                            onSaveRules(rules)
-                            onBack()
+                    if (isHost) {
+                        IconButton(
+                            onClick = {
+                                onSaveRules(rules)
+                                onBack()
+                            }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Save,
+                                contentDescription = "Save Rules",
+                                tint = Color(0xFFFFD54F)
+                            )
                         }
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Save,
-                            contentDescription = "Save Rules",
-                            tint = Color(0xFFFFD54F)
-                        )
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -111,8 +115,8 @@ fun RulesScreen(
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(12.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
-                border = BorderStroke(1.dp, Color(0xFF64B5F6))
+                colors = CardDefaults.cardColors(containerColor = if (isHost) Color(0xFF1E293B) else Color(0xFF261D1D)),
+                border = BorderStroke(1.dp, if (isHost) Color(0xFF64B5F6) else Color(0xFFFFB74D))
             ) {
                 Row(
                     modifier = Modifier.padding(12.dp),
@@ -121,12 +125,16 @@ fun RulesScreen(
                     Icon(
                         imageVector = Icons.Default.Info,
                         contentDescription = "Info",
-                        tint = Color(0xFF64B5F6),
+                        tint = if (isHost) Color(0xFF64B5F6) else Color(0xFFFFB74D),
                         modifier = Modifier.size(24.dp)
                     )
                     Spacer(modifier = Modifier.width(10.dp))
                     Text(
-                        text = "Customize your house rules below! Toggle stacking, 7-0 swaps, jump-in, and more anytime.",
+                        text = if (isHost) {
+                            "👑 You are the host. Customize your house rules below! Real-time changes are synchronized across all connected players and stored in Supabase."
+                        } else {
+                            "🔒 Match style and rules are locked. Only the host can modify the match configuration during the game."
+                        },
                         color = Color(0xFFE2E8F0),
                         fontSize = 13.sp
                     )
@@ -158,9 +166,18 @@ fun RulesScreen(
                     )
                 )
                 FilterChip(
+                    selected = rules == GameRules.NO_MERCY,
+                    onClick = { rules = GameRules.NO_MERCY },
+                    label = { Text("💀 No Mercy") },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = Color(0xFFB71C1C),
+                        selectedLabelColor = Color(0xFFFFD54F)
+                    )
+                )
+                FilterChip(
                     selected = rules == GameRules.OFFICIAL_RULES,
                     onClick = { rules = GameRules.OFFICIAL_RULES },
-                    label = { Text("Official Rules") },
+                    label = { Text("Official") },
                     colors = FilterChipDefaults.filterChipColors(
                         selectedContainerColor = Color(0xFF1976D2),
                         selectedLabelColor = Color.White
@@ -169,7 +186,7 @@ fun RulesScreen(
                 FilterChip(
                     selected = rules == GameRules.STACK_ATTACK,
                     onClick = { rules = GameRules.STACK_ATTACK },
-                    label = { Text("Stack Attack") },
+                    label = { Text("Stack") },
                     colors = FilterChipDefaults.filterChipColors(
                         selectedContainerColor = Color(0xFF388E3C),
                         selectedLabelColor = Color.White
@@ -234,11 +251,17 @@ fun RulesScreen(
             Spacer(modifier = Modifier.height(14.dp))
 
             // Section: Penalties & Elimination
-            RulesCategoryCard(title = "⚖️ Penalties & Limits") {
+            RulesCategoryCard(title = "💀 No Mercy & Penalties") {
                 RuleToggleItem(
-                    title = "Mercy Rule",
+                    title = "💀 No Mercy Rule",
+                    description = "When active, accumulating 25 or more cards causes immediate KNOCKOUT elimination! Brutal high-stakes stacking enabled.",
+                    checked = rules.noMercy,
+                    onCheckedChange = { rules = rules.copy(noMercy = it, mercyRule = it) }
+                )
+                RuleToggleItem(
+                    title = "Mercy Limit (25 Cards)",
                     description = "Players who accumulate 25 or more cards in hand are eliminated from the round",
-                    checked = rules.mercyRule,
+                    checked = rules.mercyRule || rules.noMercy,
                     onCheckedChange = { rules = rules.copy(mercyRule = it) }
                 )
                 RuleToggleItem(
@@ -247,6 +270,48 @@ fun RulesScreen(
                     checked = rules.wildDrawFourChallenge,
                     onCheckedChange = { rules = rules.copy(wildDrawFourChallenge = it) }
                 )
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // Section: Deck Composition
+            RulesCategoryCard(title = "🎴 Deck Composition (Classic 108 vs Modern 112)") {
+                Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        FilterChip(
+                            selected = rules.deckType == DeckType.CLASSIC_108,
+                            onClick = { rules = rules.copy(deckType = DeckType.CLASSIC_108, includeCustomWilds = false) },
+                            label = { Text("Classic 108") },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = Color(0xFF1E3A8A),
+                                selectedLabelColor = Color.White
+                            )
+                        )
+                        FilterChip(
+                            selected = rules.deckType == DeckType.MODERN_112,
+                            onClick = { rules = rules.copy(deckType = DeckType.MODERN_112, includeCustomWilds = true) },
+                            label = { Text("Modern 112") },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = Color(0xFF7C3AED),
+                                selectedLabelColor = Color(0xFFFFD54F)
+                            )
+                        )
+                    }
+                    Text(
+                        text = if (rules.deckType == DeckType.CLASSIC_108) {
+                            "Classic 108-card deck (24 Action + 8 Wild):\n• Skip: 2 per color (8 total)\n• Reverse: 2 per color (8 total)\n• Draw Two: 2 per color (8 total)\n• Wild: 4 total\n• Wild Draw Four: 4 total"
+                        } else {
+                            "Modern 112-card deck (Adds 4 extra cards):\n• Classic 108 Cards\n• Wild Swap/Shuffle Hands: 1 card\n• Customizable Wild Cards: 3 cards"
+                        },
+                        color = Color(0xFF94A3B8),
+                        fontSize = 11.sp,
+                        lineHeight = 16.sp,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(14.dp))
@@ -371,6 +436,13 @@ fun RulesScreen(
                 }
 
                 RuleToggleItem(
+                    title = "Sound Effects & Audio Feedback",
+                    description = "Trigger audio for card dealing, playing cards, drawing cards, and 'UNO' calls",
+                    checked = rules.soundEnabled,
+                    onCheckedChange = { rules = rules.copy(soundEnabled = it) }
+                )
+
+                RuleToggleItem(
                     title = "Haptic Vibrations",
                     description = "Vibration feedback on card plays, turns, and UNO shouts",
                     checked = rules.hapticsEnabled,
@@ -381,21 +453,43 @@ fun RulesScreen(
             Spacer(modifier = Modifier.height(24.dp))
 
             // Save & Apply Button
-            Button(
-                onClick = {
-                    onSaveRules(rules)
-                    onBack()
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(52.dp)
-                    .testTag("save_rules_button"),
-                shape = RoundedCornerShape(14.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32))
-            ) {
-                Icon(Icons.Default.Save, contentDescription = null, tint = Color.White)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("APPLY & SAVE RULES", fontWeight = FontWeight.Black, fontSize = 15.sp)
+            if (isHost) {
+                Button(
+                    onClick = {
+                        onSaveRules(rules)
+                        onBack()
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(52.dp)
+                        .testTag("save_rules_button"),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32))
+                ) {
+                    Icon(Icons.Default.Save, contentDescription = null, tint = Color.White)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("APPLY & SAVE RULES", fontWeight = FontWeight.Black, fontSize = 15.sp)
+                }
+            } else {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp),
+                    color = Color(0xFF1E293B),
+                    border = BorderStroke(1.dp, Color(0x33FFFFFF))
+                ) {
+                    Row(
+                        modifier = Modifier.padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Text(
+                            text = "🔒 Match settings can only be altered by the room host.",
+                            color = Color(0xFF94A3B8),
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                }
             }
 
             Spacer(modifier = Modifier.height(20.dp))

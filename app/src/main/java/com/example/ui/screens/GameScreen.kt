@@ -27,13 +27,14 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ElectricBolt
 import androidx.compose.material.icons.filled.FormatListBulleted
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
@@ -44,8 +45,10 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import com.example.model.GameEndingMode
+import com.example.model.GameRules
 import com.example.ui.components.CardTableArenaView
 import com.example.ui.components.FloatingDrawnPlayableCard
+import com.example.ui.components.FloatingUnplayableCard
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -54,6 +57,8 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -95,6 +100,7 @@ import com.example.ui.components.WildColorPickerDialog
 fun GameScreen(
     gameState: UnoGameState,
     localPlayerId: String? = null,
+    isHost: Boolean = false,
     onPlayCard: (UnoCard) -> Unit,
     onDrawCard: () -> Unit,
     onPassTurn: () -> Unit,
@@ -107,11 +113,16 @@ fun GameScreen(
     onTogglePassAndPlayReveal: () -> Unit,
     onNextRound: () -> Unit,
     onQuit: () -> Unit,
+    onPlayUnplayableCard: ((UnoCard) -> Unit)? = null,
+    onUpdateRules: ((GameRules) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     var showLogsSheet by remember { mutableStateOf(false) }
     var showRulesModal by remember { mutableStateOf(false) }
+    var showRuleEditor by remember { mutableStateOf(false) }
+    var editableRules by remember(gameState.rules) { mutableStateOf(gameState.rules) }
     var showQuitConfirmation by remember { mutableStateOf(false) }
+    var pickedUnplayableCard by remember { mutableStateOf<UnoCard?>(null) }
 
     val humanIndex = when (gameState.mode) {
         GameMode.ONLINE_ROOM, GameMode.WLAN_MULTIPLAYER -> {
@@ -212,12 +223,21 @@ fun GameScreen(
                             tint = Color(0xFF64B5F6)
                         )
                     }
-                    // Rules inspector button
-                    IconButton(onClick = { showRulesModal = true }) {
+                    // Rules inspector / editor button
+                    IconButton(
+                        onClick = {
+                            if (isHost && onUpdateRules != null) {
+                                editableRules = gameState.rules
+                                showRuleEditor = true
+                            } else {
+                                showRulesModal = true
+                            }
+                        }
+                    ) {
                         Icon(
-                            imageVector = Icons.Default.MenuBook,
-                            contentDescription = "Rules",
-                            tint = Color(0xFFFFD54F)
+                            imageVector = if (isHost && onUpdateRules != null) Icons.Default.Edit else Icons.Default.MenuBook,
+                            contentDescription = if (isHost && onUpdateRules != null) "Edit Match Rules" else "Rules",
+                            tint = if (isHost && onUpdateRules != null) Color(0xFFFFD54F) else Color(0xFF90CAF9)
                         )
                     }
                 },
@@ -380,32 +400,54 @@ fun GameScreen(
                         )
                     }
 
-                    // If human drew an UNPLAYABLE card, show clear notice before turn automatically ends
-                    AnimatedVisibility(
-                        visible = isMyTurn && !gameState.drawnThisTurn && gameState.unplayableDrawnNotice != null,
-                        enter = fadeIn() + slideInVertically(),
-                        exit = fadeOut() + slideOutVertically()
-                    ) {
-                        Surface(
-                            color = Color(0xFFC62828),
-                            shape = RoundedCornerShape(10.dp),
-                            border = BorderStroke(1.dp, Color(0xFFFF8A80)),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 4.dp)
+                    // If human drew an UNPLAYABLE card (or picked a non-matching card from hand)
+                    // Floating card animation: floats for a time and goes inside the hand!
+                    val floatingUnplayable = when {
+                        pickedUnplayableCard != null -> pickedUnplayableCard
+                        isMyTurn && !gameState.drawnThisTurn && gameState.unplayableDrawnCard != null -> gameState.unplayableDrawnCard
+                        else -> null
+                    }
+
+                    if (floatingUnplayable != null) {
+                        FloatingUnplayableCard(
+                            card = floatingUnplayable,
+                            titleText = if (pickedUnplayableCard != null) "NOT A MATCH" else "DRAWN • NO MATCH",
+                            detailText = if (pickedUnplayableCard != null) {
+                                "Card doesn't match active ${gameState.activeColor.displayName} or ${topCard?.value?.symbol ?: "top card"}. Returning inside..."
+                            } else {
+                                "${floatingUnplayable.color.displayName} ${floatingUnplayable.value.symbol} is not playable right now. Going inside hand..."
+                            },
+                            onFinished = {
+                                pickedUnplayableCard = null
+                            }
+                        )
+                    } else if (isMyTurn && !gameState.drawnThisTurn && gameState.unplayableDrawnNotice != null) {
+                        AnimatedVisibility(
+                            visible = true,
+                            enter = fadeIn() + slideInVertically(),
+                            exit = fadeOut() + slideOutVertically()
                         ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                                verticalAlignment = Alignment.CenterVertically
+                            Surface(
+                                color = Color(0xFFC62828),
+                                shape = RoundedCornerShape(10.dp),
+                                border = BorderStroke(1.dp, Color(0xFFFF8A80)),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 4.dp)
                             ) {
-                                Icon(Icons.Default.Info, contentDescription = null, tint = Color.White)
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = "🎴 ${gameState.unplayableDrawnNotice} Added to hand. Ending turn...",
-                                    color = Color.White,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 12.sp
-                                )
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(Icons.Default.Info, contentDescription = null, tint = Color.White)
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = "🎴 ${gameState.unplayableDrawnNotice} Added to hand. Ending turn...",
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 12.sp
+                                    )
+                                }
                             }
                         }
                     }
@@ -503,7 +545,12 @@ fun GameScreen(
                                         isPlayable = isPlayable,
                                         isSelected = (isMyTurn && gameState.drawnThisTurn && card == gameState.cardDrawnThisTurn),
                                         onClick = {
-                                            if (isPlayable) onPlayCard(card)
+                                            if (isPlayable) {
+                                                onPlayCard(card)
+                                            } else {
+                                                pickedUnplayableCard = card
+                                                onPlayUnplayableCard?.invoke(card)
+                                            }
                                         }
                                     )
                                 }
@@ -761,15 +808,38 @@ fun GameScreen(
         }
     }
 
-    // Modal: Active Rules Inspector
+    // Modal: Active Rules Inspector (Read-only for Clients/Non-Host)
     if (showRulesModal) {
         AlertDialog(
             onDismissRequest = { showRulesModal = false },
-            title = { Text("Active House Rules", fontWeight = FontWeight.Bold) },
+            title = {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Active House Rules", fontWeight = FontWeight.Bold)
+                    if (isHost && onUpdateRules != null) {
+                        Surface(
+                            color = Color(0xFFFFD54F),
+                            shape = RoundedCornerShape(6.dp)
+                        ) {
+                            Text(
+                                text = "👑 HOST",
+                                color = Color.Black,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+                }
+            },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     val r = gameState.rules
-                    RuleBullet("Player Count", "${gameState.players.size} Players")
+                    RuleBullet("Deck Variant", r.deckType.label)
+                    RuleBullet("No Mercy Mode", if (r.noMercy) "💀 Enabled (25 cards = KO)" else "Disabled")
                     RuleBullet("Stacking +2", if (r.stackingDrawTwos) "Enabled (+2 on +2)" else "Disabled")
                     RuleBullet("Stacking +4", if (r.stackingDrawFours) "Enabled (+4 on +4)" else "Disabled")
                     RuleBullet("Stack +4 on +2", if (r.stackingDrawFourOnTwo) "Enabled" else "Disabled")
@@ -777,11 +847,149 @@ fun GameScreen(
                     RuleBullet("Jump-In Rule", if (r.jumpInRule) "Enabled" else "Disabled")
                     RuleBullet("Draw Rule", if (r.drawUntilPlayable) "Draw Until Playable" else "Draw 1")
                     RuleBullet("Mercy Rule", if (r.mercyRule) "25 Cards = Out" else "Disabled")
+                    if (!isHost) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "🔒 House rules can only be edited by the Host during the match.",
+                            color = Color(0xFF94A3B8),
+                            fontSize = 11.sp
+                        )
+                    }
                 }
             },
             confirmButton = {
-                Button(onClick = { showRulesModal = false }) {
-                    Text("Got it")
+                if (isHost && onUpdateRules != null) {
+                    Button(
+                        onClick = {
+                            showRulesModal = false
+                            editableRules = gameState.rules
+                            showRuleEditor = true
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32))
+                    ) {
+                        Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Edit Rules")
+                    }
+                } else {
+                    Button(onClick = { showRulesModal = false }) {
+                        Text("Got it")
+                    }
+                }
+            },
+            dismissButton = {
+                if (isHost && onUpdateRules != null) {
+                    TextButton(onClick = { showRulesModal = false }) {
+                        Text("Close")
+                    }
+                }
+            }
+        )
+    }
+
+    // Modal: Host-only In-Match Rule Editor
+    if (showRuleEditor && isHost && onUpdateRules != null) {
+        val editorScrollState = rememberScrollState()
+        AlertDialog(
+            onDismissRequest = { showRuleEditor = false },
+            title = {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text("👑 Host Match Style Editor", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                        Text("Instant in-match rule updates (saved to Supabase & cloud)", color = Color(0xFFFFD54F), fontSize = 11.sp)
+                    }
+                }
+            },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .verticalScroll(editorScrollState)
+                        .padding(vertical = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    // Stacking +2
+                    InGameRuleToggleRow(
+                        title = "+2 Stacking",
+                        subtitle = "Chain Draw Two cards onto each other (+2, +4, +6...)",
+                        checked = editableRules.stackingDrawTwos,
+                        onCheckedChange = { editableRules = editableRules.copy(stackingDrawTwos = it) }
+                    )
+
+                    // Stacking +4
+                    InGameRuleToggleRow(
+                        title = "+4 Stacking",
+                        subtitle = "Chain Wild Draw Four cards onto each other (+4, +8...)",
+                        checked = editableRules.stackingDrawFours,
+                        onCheckedChange = { editableRules = editableRules.copy(stackingDrawFours = it) }
+                    )
+
+                    // Stack +4 on +2
+                    InGameRuleToggleRow(
+                        title = "+4 on +2 Stacking",
+                        subtitle = "Allow placing Wild Draw 4 on top of Draw 2",
+                        checked = editableRules.stackingDrawFourOnTwo,
+                        onCheckedChange = { editableRules = editableRules.copy(stackingDrawFourOnTwo = it) }
+                    )
+
+                    // Jump-In Rule
+                    InGameRuleToggleRow(
+                        title = "⚡ Jump-In Rule",
+                        subtitle = "Play an identical card out of turn immediately",
+                        checked = editableRules.jumpInRule,
+                        onCheckedChange = { editableRules = editableRules.copy(jumpInRule = it) }
+                    )
+
+                    // 7-0 Hand Swap
+                    InGameRuleToggleRow(
+                        title = "🔄 7-0 Hand Swap",
+                        subtitle = "7 swaps with chosen player; 0 passes hands in direction",
+                        checked = editableRules.sevenZeroRule,
+                        onCheckedChange = { editableRules = editableRules.copy(sevenZeroRule = it) }
+                    )
+
+                    // No Mercy Mode
+                    InGameRuleToggleRow(
+                        title = "💀 No Mercy Mode",
+                        subtitle = "25+ cards in hand results in instant Knockout Elimination!",
+                        checked = editableRules.noMercy,
+                        onCheckedChange = { editableRules = editableRules.copy(noMercy = it, mercyRule = it) }
+                    )
+
+                    // Draw Until Playable
+                    InGameRuleToggleRow(
+                        title = "Draw Until Playable",
+                        subtitle = "Draw repeatedly until finding a playable card",
+                        checked = editableRules.drawUntilPlayable,
+                        onCheckedChange = { editableRules = editableRules.copy(drawUntilPlayable = it) }
+                    )
+
+                    // Force Play
+                    InGameRuleToggleRow(
+                        title = "Force Play",
+                        subtitle = "Drawn playable card must be played immediately",
+                        checked = editableRules.forcePlay,
+                        onCheckedChange = { editableRules = editableRules.copy(forcePlay = it) }
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onUpdateRules(editableRules)
+                        showRuleEditor = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32))
+                ) {
+                    Text("Apply & Broadcast", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRuleEditor = false }) {
+                    Text("Cancel")
                 }
             }
         )
@@ -976,5 +1184,46 @@ private fun PlayersCardTrackerBar(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun InGameRuleToggleRow(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color(0xFF1E293B), RoundedCornerShape(10.dp))
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+            Text(
+                text = title,
+                color = Color.White,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = subtitle,
+                color = Color(0xFF94A3B8),
+                fontSize = 11.sp,
+                lineHeight = 14.sp
+            )
+        }
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = Color.White,
+                checkedTrackColor = Color(0xFF2E7D32),
+                uncheckedTrackColor = Color(0xFF334155)
+            )
+        )
     }
 }

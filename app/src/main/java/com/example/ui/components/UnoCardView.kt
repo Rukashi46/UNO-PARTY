@@ -1,7 +1,9 @@
 package com.example.ui.components
 
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -20,6 +22,10 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -38,6 +44,8 @@ import androidx.compose.ui.unit.sp
 import com.example.model.UnoCard
 import com.example.model.UnoColor
 import com.example.model.UnoValue
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @Composable
 fun UnoCardView(
@@ -47,22 +55,36 @@ fun UnoCardView(
     height: Dp = 120.dp,
     isPlayable: Boolean = true,
     isSelected: Boolean = false,
-    onClick: (() -> Unit)? = null
+    onClick: (() -> Unit)? = null,
+    onUnplayableClick: (() -> Unit)? = null
 ) {
+    var isFloatingReject by remember { mutableStateOf(false) }
+    val coroutineScope = rememberCoroutineScope()
+
+    val targetOffsetY = when {
+        isFloatingReject -> (-24).dp
+        isSelected -> (-12).dp
+        isPlayable -> (-4).dp
+        else -> 0.dp
+    }
+
     val elevation by animateDpAsState(
-        targetValue = if (isSelected) 10.dp else if (isPlayable) 4.dp else 1.dp,
+        targetValue = if (isFloatingReject) 12.dp else if (isSelected) 10.dp else if (isPlayable) 4.dp else 1.dp,
         label = "cardElevation"
     )
     val offsetY by animateDpAsState(
-        targetValue = if (isSelected) (-12).dp else if (isPlayable) (-4).dp else 0.dp,
+        targetValue = targetOffsetY,
+        animationSpec = if (isFloatingReject) spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMediumLow)
+                        else spring(dampingRatio = Spring.DampingRatioNoBouncy),
         label = "cardOffset"
     )
     val alpha by animateFloatAsState(
-        targetValue = if (isPlayable) 1.0f else 0.65f,
+        targetValue = if (isFloatingReject) 1.0f else if (isPlayable) 1.0f else 0.68f,
         label = "cardAlpha"
     )
 
     val borderStroke = when {
+        isFloatingReject -> BorderStroke(2.5.dp, Color(0xFFEF5350))
         card.value == UnoValue.CUSTOM_WILD || card.value == UnoValue.SHUFFLE_HANDS -> BorderStroke(2.5.dp, Color(0xFFFFD54F))
         isSelected -> BorderStroke(2.5.dp, Color(0xFFFFD700))
         isPlayable -> BorderStroke(1.5.dp, Color.White)
@@ -78,8 +100,20 @@ fun UnoCardView(
             .shadow(elevation, RoundedCornerShape(10.dp))
             .testTag("card_${card.color.name}_${card.value.name}")
             .then(
-                if (onClick != null) {
-                    Modifier.clickable(enabled = isPlayable, onClick = onClick)
+                if (onClick != null || onUnplayableClick != null) {
+                    Modifier.clickable {
+                        if (isPlayable) {
+                            onClick?.invoke()
+                        } else {
+                            // When not matching card is picked, float up for a moment, then smoothly go back inside
+                            onUnplayableClick?.invoke()
+                            coroutineScope.launch {
+                                isFloatingReject = true
+                                delay(450)
+                                isFloatingReject = false
+                            }
+                        }
+                    }
                 } else Modifier
             ),
         shape = RoundedCornerShape(10.dp),

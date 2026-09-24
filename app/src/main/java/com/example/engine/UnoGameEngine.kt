@@ -34,6 +34,7 @@ data class UnoGameState(
     val pendingSevenPlayerIndex: Int? = null,
     val drawnThisTurn: Boolean = false,
     val cardDrawnThisTurn: UnoCard? = null,
+    val unplayableDrawnCard: UnoCard? = null,
     val unplayableDrawnNotice: String? = null,
     val passAndPlayHandVisible: Boolean = false,
     val roomCode: String? = null,
@@ -96,7 +97,11 @@ object UnoGameEngine {
             )
         }
         val deckCount = if (totalPlayers >= 7) 2 else 1
-        val initialDeck = UnoDeck.generateDeck(deckCount, includeCustomWilds = rules.includeCustomWilds)
+        val initialDeck = UnoDeck.generateDeck(
+            deckCount = deckCount,
+            includeCustomWilds = rules.includeCustomWilds,
+            deckType = rules.deckType
+        )
 
         val players = mutableListOf<Player>()
         for (i in 0 until totalPlayers) {
@@ -861,6 +866,7 @@ object UnoGameEngine {
             val nextState = s.copy(
                 drawnThisTurn = false,
                 cardDrawnThisTurn = null,
+                unplayableDrawnCard = drawn,
                 unplayableDrawnNotice = "${drawn.color.displayName} ${drawn.value.symbol} is not playable. Added to hand.",
                 logs = s.logs + GameLogEntry(
                     text = "${p.name} drew ${drawn.color.displayName} ${drawn.value.symbol} (Not playable). Turn ends.",
@@ -970,6 +976,7 @@ object UnoGameEngine {
             currentPlayerIndex = nextIndex,
             drawnThisTurn = false,
             cardDrawnThisTurn = null,
+            unplayableDrawnCard = null,
             unplayableDrawnNotice = null,
             passAndPlayHandVisible = !isPassAndPlay || !nextPlayer.isHuman,
             lastActionTimestamp = System.currentTimeMillis()
@@ -1094,7 +1101,11 @@ object UnoGameEngine {
                     drawPile = discardPile.shuffled().toMutableList()
                     discardPile = mutableListOf(top)
                 } else {
-                    drawPile = UnoDeck.generateDeck(1, includeCustomWilds = state.rules.includeCustomWilds)
+                    drawPile = UnoDeck.generateDeck(
+                        deckCount = 1,
+                        includeCustomWilds = state.rules.includeCustomWilds,
+                        deckType = state.rules.deckType
+                    )
                 }
             }
             if (drawPile.isNotEmpty()) {
@@ -1103,8 +1114,13 @@ object UnoGameEngine {
         }
 
         val player = state.players[playerIndex]
+        val updatedHand = player.hand + drawn
+        val effectiveMercy = state.rules.noMercy || state.rules.mercyRule
+        val isMercyEliminated = effectiveMercy && (updatedHand.size >= state.rules.mercyLimit)
+
         val updatedPlayer = player.copy(
-            hand = player.hand + drawn,
+            hand = updatedHand,
+            isEliminated = player.isEliminated || isMercyEliminated,
             hasCalledUno = false,
             canBePenalizedUno = false
         )
@@ -1112,10 +1128,20 @@ object UnoGameEngine {
             this[playerIndex] = updatedPlayer
         }
 
+        val extraLogs = if (isMercyEliminated && !player.isEliminated) {
+            listOf(
+                GameLogEntry(
+                    text = "💀 NO MERCY! ${player.name} reached ${updatedHand.size} cards (limit: ${state.rules.mercyLimit}) and is ELIMINATED!",
+                    isAlert = true
+                )
+            )
+        } else emptyList()
+
         val s = state.copy(
             players = updatedPlayers,
             drawPile = drawPile,
-            discardPile = discardPile
+            discardPile = discardPile,
+            logs = state.logs + extraLogs
         )
         return Pair(s, drawn)
     }

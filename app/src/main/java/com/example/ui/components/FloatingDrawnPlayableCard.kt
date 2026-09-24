@@ -1,9 +1,12 @@
 package com.example.ui.components
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutLinearInEasing
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
@@ -16,6 +19,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -29,9 +33,13 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Done
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.NotInterested
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Button
@@ -43,9 +51,14 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
@@ -56,6 +69,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.model.UnoCard
+import kotlinx.coroutines.delay
 
 @Composable
 fun FloatingDrawnPlayableCard(
@@ -224,6 +238,161 @@ fun FloatingDrawnPlayableCard(
                             )
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Displays a non-matching card floating for a time with visual indicator,
+ * which then animates downward ("goes inside" the player's hand).
+ * Satisfies the requirement: "While a player picks not matching card also it should float for a time and go inside"
+ */
+@Composable
+fun FloatingUnplayableCard(
+    card: UnoCard,
+    titleText: String = "NOT MATCHING",
+    detailText: String = "Card does not match the discard pile. Going into hand...",
+    onFinished: () -> Unit = {},
+    modifier: Modifier = Modifier
+) {
+    var isGoingInside by remember(card.id) { mutableStateOf(false) }
+
+    // Phase 1: Card floats prominently above hand for ~1100ms
+    // Phase 2: Card smoothly slides down into the hand and fades
+    LaunchedEffect(card.id) {
+        delay(1100L)
+        isGoingInside = true
+        delay(500L)
+        onFinished()
+    }
+
+    val infiniteTransition = rememberInfiniteTransition(label = "unplayableFloat")
+    val bobbingOffset by infiniteTransition.animateFloat(
+        initialValue = -4f,
+        targetValue = 4f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(800, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "bobbingOffset"
+    )
+
+    val translateY by animateDpAsState(
+        targetValue = if (isGoingInside) 120.dp else bobbingOffset.dp,
+        animationSpec = tween(durationMillis = 450, easing = FastOutLinearInEasing),
+        label = "translateY"
+    )
+
+    val scale by animateFloatAsState(
+        targetValue = if (isGoingInside) 0.6f else 1.0f,
+        animationSpec = tween(durationMillis = 450),
+        label = "scale"
+    )
+
+    val alpha by animateFloatAsState(
+        targetValue = if (isGoingInside) 0f else 1.0f,
+        animationSpec = tween(durationMillis = 400),
+        label = "alpha"
+    )
+
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 6.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Surface(
+            modifier = Modifier
+                .offset(y = translateY)
+                .scale(scale)
+                .alpha(alpha)
+                .shadow(16.dp, RoundedCornerShape(20.dp))
+                .clickable {
+                    isGoingInside = true
+                    onFinished()
+                }
+                .testTag("floating_unplayable_card"),
+            shape = RoundedCornerShape(20.dp),
+            color = Color(0xF0180808),
+            border = BorderStroke(2.dp, Color(0xFFEF5350))
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                // Not Matching Badge Header
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = Color(0xFFB71C1C),
+                    border = BorderStroke(1.dp, Color(0xFFFF8A80))
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.NotInterested,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(15.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = titleText,
+                            color = Color.White,
+                            fontWeight = FontWeight.Black,
+                            fontSize = 11.sp,
+                            letterSpacing = 0.5.sp
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // The floating card itself
+                UnoCardView(
+                    card = card,
+                    width = 88.dp,
+                    height = 132.dp,
+                    isPlayable = false,
+                    isSelected = true,
+                    onClick = {
+                        isGoingInside = true
+                        onFinished()
+                    }
+                )
+
+                Spacer(modifier = Modifier.height(6.dp))
+
+                Text(
+                    text = detailText,
+                    color = Color(0xFFFFCDD2),
+                    fontSize = 11.5.sp,
+                    fontWeight = FontWeight.Medium,
+                    textAlign = TextAlign.Center
+                )
+
+                Spacer(modifier = Modifier.height(6.dp))
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.ArrowDownward,
+                        contentDescription = null,
+                        tint = Color(0xFFFF8A80),
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = "Going inside hand...",
+                        color = Color(0xFFEF9A9A),
+                        fontSize = 10.5.sp,
+                        fontWeight = FontWeight.Bold
+                    )
                 }
             }
         }

@@ -50,6 +50,8 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.TabRowDefaults
@@ -79,6 +81,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.engine.UnoDeck
+import com.example.model.DeckType
 import com.example.model.GameMode
 import com.example.model.GameRules
 import com.example.ui.components.UnoCardBackView
@@ -102,6 +105,8 @@ fun HomeScreen(
 
     val clipboardManager = LocalClipboardManager.current
     val lobbyPlayers by viewModel.lobbyPlayers.collectAsStateWithLifecycle()
+    val supabaseLobbyState by viewModel.supabaseLobbyRepository.lobbyState.collectAsStateWithLifecycle()
+    val isSupabaseSyncing by viewModel.supabaseLobbyRepository.isSyncing.collectAsStateWithLifecycle()
     val hostIpAddress by viewModel.hostIpAddress.collectAsStateWithLifecycle()
     val discoveredRooms by viewModel.discoveredRooms.collectAsStateWithLifecycle()
     val isClientConnected by viewModel.isClientConnected.collectAsStateWithLifecycle()
@@ -109,6 +114,7 @@ fun HomeScreen(
     val networkErrorMessage by viewModel.networkErrorMessage.collectAsStateWithLifecycle()
     val currentUsername by viewModel.currentUsername.collectAsStateWithLifecycle()
     val currentAvatar by viewModel.currentAvatar.collectAsStateWithLifecycle()
+    val networkRole by viewModel.networkRole.collectAsStateWithLifecycle()
     var showEditProfileDialog by remember { mutableStateOf(false) }
     var codeCopied by remember { mutableStateOf(false) }
 
@@ -524,8 +530,13 @@ fun HomeScreen(
                                 }
                             }
 
-                            // Discovered Rooms on Local Wi-Fi
-                            if (isWlan && discoveredRooms.isNotEmpty()) {
+                            // Discovered Rooms on Local Wi-Fi (Filter out current user's own hosted or joined room)
+                            val joinableRooms = discoveredRooms.filter {
+                                it.hostPlayerId != viewModel.currentUserId &&
+                                !it.roomCode.equals(roomCode, ignoreCase = true) &&
+                                !isClientConnected
+                            }
+                            if (isWlan && joinableRooms.isNotEmpty()) {
                                 Spacer(modifier = Modifier.height(10.dp))
                                 Text(
                                     text = "📡 Discovered on Local Wi-Fi (Tap to Join):",
@@ -535,7 +546,7 @@ fun HomeScreen(
                                 )
                                 Spacer(modifier = Modifier.height(4.dp))
                                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    discoveredRooms.forEach { room ->
+                                    joinableRooms.forEach { room ->
                                         Surface(
                                             modifier = Modifier
                                                 .fillMaxWidth()
@@ -592,12 +603,29 @@ fun HomeScreen(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(
-                                text = "PLAYERS ${lobbyPlayers.size}/10",
-                                color = Color.White,
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Black
-                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = "PLAYERS ${lobbyPlayers.size}/10",
+                                    color = Color.White,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Black
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                if (isSupabaseSyncing) {
+                                    Surface(
+                                        color = Color(0xFF1B5E20),
+                                        shape = RoundedCornerShape(4.dp)
+                                    ) {
+                                        Text(
+                                            text = "⚡ SUPABASE SYNC",
+                                            color = Color(0xFFA5D6A7),
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
+                            }
                             if (lobbyPlayers.size < 2) {
                                 Text(
                                     text = "Waiting for players... (Min 2)",
@@ -788,6 +816,9 @@ fun HomeScreen(
             }
 
             // Rules & Custom Wild Card Preview Card
+            val isMultiplayerMode = selectedMode == GameMode.ONLINE_ROOM || selectedMode == GameMode.WLAN_MULTIPLAYER
+            val isHostUser = (networkRole == com.example.viewmodel.NetworkRole.HOST || networkRole == com.example.viewmodel.NetworkRole.OFFLINE) || (!isMultiplayerMode)
+
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(16.dp),
@@ -800,19 +831,50 @@ fun HomeScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = "Rules Variant & Wild Card",
-                            color = Color.White,
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.Bold
-                        )
+                        Column {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = "Rules Variant & Wild Card",
+                                    color = Color.White,
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                if (isMultiplayerMode) {
+                                    Surface(
+                                        color = if (isHostUser) Color(0xFF0D47A1) else Color(0xFF424242),
+                                        shape = RoundedCornerShape(4.dp)
+                                    ) {
+                                        Text(
+                                            text = if (isHostUser) "👑 HOST AUTHORITATIVE" else "🔒 HOST LOCKED",
+                                            color = if (isHostUser) Color(0xFFFFD54F) else Color(0xFFE0E0E0),
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
+                            }
+                            if (isMultiplayerMode && !isHostUser) {
+                                Text(
+                                    text = "Match settings can only be modified by the room host.",
+                                    color = Color(0xFF94A3B8),
+                                    fontSize = 10.sp
+                                )
+                            }
+                        }
+
                         OutlinedButton(
                             onClick = onOpenRules,
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFFFD54F))
                         ) {
-                            Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Icon(
+                                imageVector = if (isHostUser) Icons.Default.Settings else Icons.Default.Info,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("Rules & Wild", fontSize = 12.sp)
+                            Text(if (isHostUser) "Rules & Wild" else "View Rules", fontSize = 12.sp)
                         }
                     }
 
@@ -859,6 +921,7 @@ fun HomeScreen(
 
                     val presets = listOf(
                         Pair("Spicy House Rules", GameRules.SPICY_HOUSE_RULES),
+                        Pair("No Mercy Rule", GameRules.NO_MERCY),
                         Pair("Official Standard", GameRules.OFFICIAL_RULES),
                         Pair("Stack Attack", GameRules.STACK_ATTACK),
                         Pair("Chaos Party", GameRules.CHAOS_PARTY)
@@ -877,8 +940,11 @@ fun HomeScreen(
                                 color = if (isSelected) Color(0xFF81C784) else Color(0x22FFFFFF)
                             ),
                             onClick = {
-                                selectedPresetName = name
-                                currentRules = ruleSet
+                                if (isHostUser) {
+                                    selectedPresetName = name
+                                    currentRules = ruleSet
+                                    viewModel.updateRules(ruleSet, name)
+                                }
                             }
                         ) {
                             Row(
@@ -897,6 +963,7 @@ fun HomeScreen(
                                 Text(
                                     text = when (name) {
                                         "Spicy House Rules" -> "Stacking + 7-0 + Jump-In"
+                                        "No Mercy Rule" -> "💀 25+ cards = KO"
                                         "Official Standard" -> "Classic No-Stacking"
                                         "Stack Attack" -> "+2 & +4 Stacking"
                                         else -> "All Features On"
@@ -906,6 +973,83 @@ fun HomeScreen(
                                 )
                             }
                         }
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // Deck Type Selection (Classic 108 vs Modern 112)
+                    Text(
+                        text = "Deck Type",
+                        color = Color(0xFFFFD54F),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Surface(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable(enabled = isHostUser) {
+                                    currentRules = currentRules.copy(deckType = DeckType.CLASSIC_108, includeCustomWilds = false)
+                                    viewModel.updateRules(currentRules, selectedPresetName)
+                                },
+                            shape = RoundedCornerShape(8.dp),
+                            color = if (currentRules.deckType == DeckType.CLASSIC_108) Color(0xFF1E3A8A) else Color(0xFF0F172A),
+                            border = BorderStroke(1.dp, if (currentRules.deckType == DeckType.CLASSIC_108) Color(0xFF60A5FA) else Color(0x33FFFFFF))
+                        ) {
+                            Column(modifier = Modifier.padding(8.dp)) {
+                                Text("Classic 108 Cards", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                                Text("24 Action + 8 Wild", color = Color(0xFF93C5FD), fontSize = 10.sp)
+                            }
+                        }
+                        Surface(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable(enabled = isHostUser) {
+                                    currentRules = currentRules.copy(deckType = DeckType.MODERN_112, includeCustomWilds = true)
+                                    viewModel.updateRules(currentRules, selectedPresetName)
+                                },
+                            shape = RoundedCornerShape(8.dp),
+                            color = if (currentRules.deckType == DeckType.MODERN_112) Color(0xFF4C1D95) else Color(0xFF0F172A),
+                            border = BorderStroke(1.dp, if (currentRules.deckType == DeckType.MODERN_112) Color(0xFFA78BFA) else Color(0x33FFFFFF))
+                        ) {
+                            Column(modifier = Modifier.padding(8.dp)) {
+                                Text("Modern 112 Cards", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                                Text("+1 Shuffle + 3 Wilds", color = Color(0xFFDDD6FE), fontSize = 10.sp)
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // No Mercy switch
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color(0xFF1E1B4B), RoundedCornerShape(8.dp))
+                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text("💀 No Mercy Mode", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            Text("25+ cards in hand = KO Elimination!", color = Color(0xFFF87171), fontSize = 10.sp)
+                        }
+                        Switch(
+                            checked = currentRules.noMercy,
+                            enabled = isHostUser,
+                            onCheckedChange = { checked ->
+                                currentRules = currentRules.copy(noMercy = checked, mercyRule = checked)
+                                viewModel.updateRules(currentRules, selectedPresetName)
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color(0xFFEF4444),
+                                checkedTrackColor = Color(0xFF7F1D1D)
+                            )
+                        )
                     }
                 }
             }
