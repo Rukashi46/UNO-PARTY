@@ -110,6 +110,7 @@ fun GameScreen(
     onSelectWildColor: (UnoColor) -> Unit,
     onSelectCustomWildEffect: (CustomWildEffect) -> Unit,
     onSelectSevenSwapTarget: (Int) -> Unit,
+    onSelectColorRouletteColor: ((UnoColor) -> Unit)? = null,
     onTogglePassAndPlayReveal: () -> Unit,
     onNextRound: () -> Unit,
     onQuit: () -> Unit,
@@ -573,6 +574,17 @@ fun GameScreen(
     if (gameState.gamePhase == GamePhase.CUSTOM_WILD_EFFECT_SELECTION) {
         CustomWildEffectDialog(
             onEffectSelected = { effect -> onSelectCustomWildEffect(effect) }
+        )
+    }
+
+    // Modal: Wild Color Roulette Target Color Picker
+    if (gameState.gamePhase == GamePhase.COLOR_ROULETTE_TARGET_SELECTION) {
+        val targetIdx = gameState.pendingRouletteTargetIndex ?: gameState.currentPlayerIndex
+        val targetPlayer = gameState.players.getOrNull(targetIdx)
+        val targetName = targetPlayer?.name ?: "Player"
+        com.example.ui.components.WildColorRouletteDialog(
+            targetPlayerName = targetName,
+            onColorSelected = { color -> onSelectColorRouletteColor?.invoke(color) }
         )
     }
 

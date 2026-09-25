@@ -458,50 +458,97 @@ fun ActionControlsBar(
 ) {
     Row(
         modifier = modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 6.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Draw Button
-        Button(
+        // DRAW CARD Button
+        Surface(
             onClick = onDraw,
             enabled = canDraw,
-            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1976D2)),
+            color = if (canDraw) Color(0xFF0284C7) else Color(0x330284C7),
+            shape = RoundedCornerShape(12.dp),
+            shadowElevation = if (canDraw) 4.dp else 0.dp,
             modifier = Modifier.testTag("draw_button")
         ) {
-            Text("Draw Card", fontWeight = FontWeight.Bold)
-        }
-
-        // Pass / End Turn Button
-        if (canPass) {
-            Button(
-                onClick = onPass,
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF455A64)),
-                modifier = Modifier.testTag("pass_button")
+            Row(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("End Turn", fontWeight = FontWeight.Bold)
+                Text("🎴", fontSize = 14.sp)
+                Spacer(modifier = Modifier.width(4.dp))
+                Column {
+                    Text(
+                        text = "DRAW",
+                        color = Color.White,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Black
+                    )
+                    Text(
+                        text = "CARD",
+                        color = Color(0xFFBAE6FD),
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
             }
         }
 
-        // Shout UNO Button
-        Button(
+        // UNO Button
+        Surface(
             onClick = onCallUno,
             enabled = canCallUno,
-            colors = ButtonDefaults.buttonColors(
-                containerColor = Color(0xFFE53935),
-                disabledContainerColor = Color(0x33E53935)
-            ),
-            modifier = Modifier
-                .height(44.dp)
-                .testTag("call_uno_button")
+            color = if (canCallUno) Color(0xFFDC2626) else Color(0x33DC2626),
+            shape = RoundedCornerShape(12.dp),
+            border = BorderStroke(1.dp, if (canCallUno) Color(0xFFFFD54F) else Color.Transparent),
+            shadowElevation = if (canCallUno) 6.dp else 0.dp,
+            modifier = Modifier.testTag("call_uno_button")
         ) {
-            Text(
-                text = "🔥 UNO!",
-                fontSize = 16.sp,
-                fontWeight = FontWeight.Black,
-                letterSpacing = 1.sp
-            )
+            Box(
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "UNO",
+                    color = if (canCallUno) Color(0xFFFFEB3B) else Color(0x66FFFFFF),
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Black,
+                    letterSpacing = 1.sp
+                )
+            }
+        }
+
+        // END TURN Button
+        if (canPass) {
+            Surface(
+                onClick = onPass,
+                color = Color(0xFF334155),
+                shape = RoundedCornerShape(12.dp),
+                shadowElevation = 3.dp,
+                modifier = Modifier.testTag("pass_button")
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("⏭", fontSize = 12.sp)
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Column {
+                        Text(
+                            text = "END",
+                            color = Color.White,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Black
+                        )
+                        Text(
+                            text = "TURN",
+                            color = Color(0xFF94A3B8),
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
         }
     }
 }
@@ -682,6 +729,92 @@ fun CustomWildEffectDialog(
                             )
                         }
                     }
+                }
+            }
+        },
+        confirmButton = {}
+    )
+}
+
+@Composable
+fun WildColorRouletteDialog(
+    targetPlayerName: String,
+    onColorSelected: (UnoColor) -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = {},
+        containerColor = Color(0xFF0F172A),
+        shape = RoundedCornerShape(20.dp),
+        tonalElevation = 10.dp,
+        title = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(20.dp),
+                    color = Color(0xFFFF5722).copy(alpha = 0.2f),
+                    border = BorderStroke(1.5.dp, Color(0xFFFF5722)),
+                    modifier = Modifier.padding(bottom = 6.dp)
+                ) {
+                    Text(
+                        text = "🎯 COLOR ROULETTE",
+                        color = Color(0xFFFF7043),
+                        fontWeight = FontWeight.Black,
+                        fontSize = 17.sp,
+                        letterSpacing = 1.sp,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                    )
+                }
+                Text(
+                    text = "$targetPlayerName, choose a color!",
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp
+                )
+                Text(
+                    text = "Draw cards continuously until this color appears.",
+                    color = Color(0xFF94A3B8),
+                    fontSize = 11.5.sp,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(top = 2.dp)
+                )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    ColorChoiceButton(
+                        color = UnoColor.RED,
+                        modifier = Modifier.weight(1f),
+                        onClick = { onColorSelected(UnoColor.RED) }
+                    )
+                    ColorChoiceButton(
+                        color = UnoColor.BLUE,
+                        modifier = Modifier.weight(1f),
+                        onClick = { onColorSelected(UnoColor.BLUE) }
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    ColorChoiceButton(
+                        color = UnoColor.GREEN,
+                        modifier = Modifier.weight(1f),
+                        onClick = { onColorSelected(UnoColor.GREEN) }
+                    )
+                    ColorChoiceButton(
+                        color = UnoColor.YELLOW,
+                        modifier = Modifier.weight(1f),
+                        onClick = { onColorSelected(UnoColor.YELLOW) }
+                    )
                 }
             }
         },

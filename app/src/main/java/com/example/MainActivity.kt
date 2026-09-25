@@ -95,6 +95,7 @@ fun UnoAppRoot(
                 onSelectWildColor = { color -> viewModel.chooseWildColor(color) },
                 onSelectCustomWildEffect = { effect -> viewModel.chooseCustomWildEffect(effect) },
                 onSelectSevenSwapTarget = { targetIdx -> viewModel.chooseSevenSwapTarget(targetIdx) },
+                onSelectColorRouletteColor = { color -> viewModel.chooseColorRoulette(color) },
                 onTogglePassAndPlayReveal = { viewModel.togglePassAndPlayHandVisibility() },
                 onNextRound = { viewModel.nextRound() },
                 onPlayUnplayableCard = { viewModel.playUnplayableCardFeedback() },

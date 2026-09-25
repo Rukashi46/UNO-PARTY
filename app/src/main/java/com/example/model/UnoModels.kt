@@ -7,10 +7,16 @@ enum class UnoColor(val displayName: String, val composeColor: Color, val darkCo
     YELLOW("Yellow", Color(0xFFFDD835), Color(0xFFF57F17)),
     GREEN("Green", Color(0xFF43A047), Color(0xFF1B5E20)),
     BLUE("Blue", Color(0xFF1E88E5), Color(0xFF0D47A1)),
-    WILD("Wild", Color(0xFF263238), Color(0xFF102027))
+    WILD("Wild", Color(0xFF121824), Color(0xFF0A0F1D))
 }
 
-enum class UnoValue(val symbol: String, val points: Int, val isAction: Boolean, val isWild: Boolean) {
+enum class UnoValue(
+    val symbol: String,
+    val points: Int,
+    val isAction: Boolean,
+    val isWild: Boolean,
+    val drawAmount: Int = 0
+) {
     ZERO("0", 0, false, false),
     ONE("1", 1, false, false),
     TWO("2", 2, false, false),
@@ -23,29 +29,32 @@ enum class UnoValue(val symbol: String, val points: Int, val isAction: Boolean, 
     NINE("9", 9, false, false),
     SKIP("⊘", 20, true, false),
     REVERSE("⇄", 20, true, false),
-    DRAW_TWO("+2", 20, true, false),
+    DRAW_TWO("+2", 20, true, false, drawAmount = 2),
+    DRAW_FOUR("+4", 40, true, false, drawAmount = 4),
+    SKIP_EVERYONE("⊘⊘", 30, true, false),
+    DISCARD_ALL("🗑", 30, true, false),
     WILD("★", 50, false, true),
-    WILD_DRAW_FOUR("+4", 50, true, true),
+    WILD_DRAW_FOUR("+4", 50, true, true, drawAmount = 4),
     CUSTOM_WILD("⚡", 50, true, true),
-    SHUFFLE_HANDS("🔀", 40, true, true);
+    SHUFFLE_HANDS("🔀", 40, true, true),
+    WILD_REVERSE_DRAW_FOUR("⇄+4", 50, true, true, drawAmount = 4),
+    WILD_DRAW_SIX("+6", 50, true, true, drawAmount = 6),
+    WILD_DRAW_TEN("+10", 50, true, true, drawAmount = 10),
+    WILD_COLOR_ROULETTE("🎯", 50, true, true);
 
-    val isNumber: Boolean get() = this in ZERO..NINE
+    val isNumber: Boolean get() = this.ordinal in ZERO.ordinal..NINE.ordinal
+    val isDrawCard: Boolean get() = drawAmount > 0
 }
 
 /**
  * Centralized rule-checking function:
- * A card is playable if:
- * 1. Card color matches active color
- * OR
- * 2. Card number matches active number
- * OR
- * 3. Card action matches active action (e.g. SKIP on SKIP, REVERSE on REVERSE, DRAW_TWO on DRAW_TWO)
- * OR
- * 4. Card is Wild
- * OR
- * 5. Card is Custom Wild
- * OR
- * 6. Card is a valid stacking card according to stacking rules
+ * Follows exact playability priority:
+ * 1. Pending draw stack active: only valid stackable draw cards (or Custom Wild if allowed) can be played.
+ * 2. No pending draw stack:
+ *    - Wild cards can always be played.
+ *    - Matching active color.
+ *    - Matching number (number on number).
+ *    - Matching action (action on action, e.g. Skip on Skip, Discard All on Discard All, Draw 4 on Draw 4).
  */
 fun isCardPlayable(
     card: UnoCard,
@@ -54,34 +63,43 @@ fun isCardPlayable(
     pendingDrawStack: Int = 0,
     rules: GameRules = GameRules()
 ): Boolean {
-    // 6. Stacking check if there is an active penalty stack (+2 or +4)
+    // 1. Draw Stacking Check
     if (pendingDrawStack > 0) {
-        // Section 7: If there is an active stack, the player MAY play Custom Wild ⚡
-        if (card.value == UnoValue.CUSTOM_WILD) return true
+        // Custom wild allowed during stack in Modern 112
+        if (rules.includeCustomWilds && card.value == UnoValue.CUSTOM_WILD) return true
 
-        if (topCard.value == UnoValue.DRAW_TWO) {
-            if (rules.stackingDrawTwos && card.value == UnoValue.DRAW_TWO) return true
-            if (rules.stackingDrawFourOnTwo && card.value == UnoValue.WILD_DRAW_FOUR) return true
+        // No Mercy mode / general stacking allows stacking any draw card (+2, +4, +6, +10)
+        if (rules.deckType == DeckType.NO_MERCY_168 || rules.noMercy) {
+            if (card.value.isDrawCard) return true
             return false
         }
-        if (topCard.value == UnoValue.WILD_DRAW_FOUR) {
-            if (rules.stackingDrawFours && card.value == UnoValue.WILD_DRAW_FOUR) return true
+
+        // Classic / Modern Stacking Rules
+        if (topCard.value == UnoValue.DRAW_TWO) {
+            if (rules.stackingDrawTwos && card.value == UnoValue.DRAW_TWO) return true
+            if (rules.stackingDrawFourOnTwo && (card.value == UnoValue.WILD_DRAW_FOUR || card.value == UnoValue.DRAW_FOUR)) return true
             return false
+        }
+        if (topCard.value == UnoValue.WILD_DRAW_FOUR || topCard.value == UnoValue.DRAW_FOUR) {
+            if (rules.stackingDrawFours && (card.value == UnoValue.WILD_DRAW_FOUR || card.value == UnoValue.DRAW_FOUR)) return true
+            return false
+        }
+        if (card.value.isDrawCard && (rules.stackingDrawTwos || rules.stackingDrawFours)) {
+            return true
         }
         return false
     }
 
-    // 4 & 5. Wild cards and Custom Wild cards can always be played
+    // 2. Wild cards can always be played
     if (card.value.isWild) return true
 
-    // 1. Color matches active color
+    // 3. Color matches active color
     if (card.color == activeColor) return true
 
-    // 2. Number matches active number
+    // 4. Number matches active number
     if (card.value.isNumber && topCard.value.isNumber && card.value == topCard.value) return true
 
-    // 3. Action matches active action (even when color is different!)
-    // e.g. RED SKIP on BLUE SKIP, RED REVERSE on BLUE REVERSE, RED +2 on BLUE +2
+    // 5. Action matches active action (e.g. SKIP on SKIP, REVERSE on REVERSE, DISCARD_ALL on DISCARD_ALL, DRAW_FOUR on DRAW_FOUR)
     if (card.value.isAction && topCard.value.isAction && card.value == topCard.value) return true
 
     return false
@@ -151,19 +169,21 @@ enum class GamePhase {
     COLOR_SELECTION,
     CUSTOM_WILD_EFFECT_SELECTION,
     HAND_SWAP_SELECTION,
+    COLOR_ROULETTE_TARGET_SELECTION,
     CHALLENGE_PROMPT,
     ROUND_OVER,
     MATCH_OVER
 }
 
 enum class CustomWildEffect(val displayName: String, val description: String) {
-    SHUFFLE_HANDS("🔀 Shuffle Hands", "Collect all cards, shuffle them, and redistribute preserving each player's card count"),
-    EVERYONE_PLUS_FOUR("➕ Everyone +4", "Every other player receives 4 cards (and absorbs active stack if next)")
+    SHUFFLE_HANDS("🔀 Shuffle Hands", "Collect all active cards, shuffle them, and redistribute one-by-one"),
+    EVERYONE_PLUS_FOUR("➕ Everyone +4", "Every other active player receives 4 cards (and absorbs active stack if next)")
 }
 
 enum class DeckType(val label: String, val cardCount: Int, val description: String) {
-    CLASSIC_108("Classic 108-card deck", 108, "24 Action (Skip, Reverse, Draw Two) + 8 Wild (Wild, Wild Draw Four)"),
-    MODERN_112("Modern 112-card deck", 112, "Adds 1 Wild Swap/Shuffle Hands + 3 Customizable Wild cards")
+    CLASSIC_108("Classic — 108 cards", 108, "76 Number + 24 Action + 8 Wild"),
+    MODERN_112("Modern — 112 cards", 112, "Classic 108 + 1 Shuffle Hands + 3 Custom Wild"),
+    NO_MERCY_168("No Mercy — 168 cards", 168, "168-Card Cutthroat deck: Wild +6, Wild +10, Reverse +4, Color Roulette, Discard All, Skip Everyone, 7-Swap, 0-Pass, 25-Card Mercy")
 }
 
 data class GameRules(
@@ -231,9 +251,9 @@ data class GameRules(
             wildDrawFourChallenge = false,
             mercyRule = true,
             mercyLimit = 25,
-            includeCustomWilds = true,
+            includeCustomWilds = false,
             noMercy = true,
-            deckType = DeckType.MODERN_112
+            deckType = DeckType.NO_MERCY_168
         )
 
         val STACK_ATTACK = GameRules(
@@ -261,9 +281,9 @@ data class GameRules(
             forcePlay = false,
             wildDrawFourChallenge = false,
             mercyRule = true,
-            includeCustomWilds = true,
+            includeCustomWilds = false,
             noMercy = true,
-            deckType = DeckType.MODERN_112
+            deckType = DeckType.NO_MERCY_168
         )
     }
 }

@@ -275,7 +275,7 @@ fun RulesScreen(
             Spacer(modifier = Modifier.height(14.dp))
 
             // Section: Deck Composition
-            RulesCategoryCard(title = "🎴 Deck Composition (Classic 108 vs Modern 112)") {
+            RulesCategoryCard(title = "🎴 Deck Composition (Classic vs Modern vs No Mercy)") {
                 Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -283,8 +283,8 @@ fun RulesScreen(
                     ) {
                         FilterChip(
                             selected = rules.deckType == DeckType.CLASSIC_108,
-                            onClick = { rules = rules.copy(deckType = DeckType.CLASSIC_108, includeCustomWilds = false) },
-                            label = { Text("Classic 108") },
+                            onClick = { rules = rules.copy(deckType = DeckType.CLASSIC_108, includeCustomWilds = false, noMercy = false) },
+                            label = { Text("Classic — 108") },
                             colors = FilterChipDefaults.filterChipColors(
                                 selectedContainerColor = Color(0xFF1E3A8A),
                                 selectedLabelColor = Color.White
@@ -292,22 +292,31 @@ fun RulesScreen(
                         )
                         FilterChip(
                             selected = rules.deckType == DeckType.MODERN_112,
-                            onClick = { rules = rules.copy(deckType = DeckType.MODERN_112, includeCustomWilds = true) },
-                            label = { Text("Modern 112") },
+                            onClick = { rules = rules.copy(deckType = DeckType.MODERN_112, includeCustomWilds = true, noMercy = false) },
+                            label = { Text("Modern — 112") },
                             colors = FilterChipDefaults.filterChipColors(
                                 selectedContainerColor = Color(0xFF7C3AED),
                                 selectedLabelColor = Color(0xFFFFD54F)
                             )
                         )
+                        FilterChip(
+                            selected = rules.deckType == DeckType.NO_MERCY_168,
+                            onClick = { rules = rules.copy(deckType = DeckType.NO_MERCY_168, includeCustomWilds = false, noMercy = true, mercyRule = true, sevenZeroRule = true, forcePlay = true) },
+                            label = { Text("💀 No Mercy — 168") },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = Color(0xFFB71C1C),
+                                selectedLabelColor = Color(0xFFFFD54F)
+                            )
+                        )
                     }
                     Text(
-                        text = if (rules.deckType == DeckType.CLASSIC_108) {
-                            "Classic 108-card deck (24 Action + 8 Wild):\n• Skip: 2 per color (8 total)\n• Reverse: 2 per color (8 total)\n• Draw Two: 2 per color (8 total)\n• Wild: 4 total\n• Wild Draw Four: 4 total"
-                        } else {
-                            "Modern 112-card deck (Adds 4 extra cards):\n• Classic 108 Cards\n• Wild Swap/Shuffle Hands: 1 card\n• Customizable Wild Cards: 3 cards"
+                        text = when (rules.deckType) {
+                            DeckType.CLASSIC_108 -> "Classic 108-card deck:\n• 76 Number Cards (1 zero + two 1-9 per color)\n• 24 Action Cards (2 Skip, 2 Reverse, 2 Draw 2 per color)\n• 8 Wild Cards (4 Wild, 4 Wild Draw Four)"
+                            DeckType.MODERN_112 -> "Modern 112-card deck (Adds 4 extra cards):\n• Classic 108 Cards\n• 1 dedicated Wild Shuffle Hands (🔀)\n• 3 Customizable Wild Cards (⚡)"
+                            DeckType.NO_MERCY_168 -> "NO MERCY — 168 CARDS:\n• 168 Cards (144 colored + 24 wild cards)\n• 7's Swap & 0's Pass\n• Full Stacking (+2, +4, +6, +10)\n• 25-Card Mercy Elimination\n• Wild +6 & Wild +10\n• Wild Color Roulette (🎯)\n• Discard All (🗑)\n• Skip Everyone (⊘⊘)"
                         },
                         color = Color(0xFF94A3B8),
-                        fontSize = 11.sp,
+                        fontSize = 11.5.sp,
                         lineHeight = 16.sp,
                         modifier = Modifier.padding(top = 8.dp)
                     )
