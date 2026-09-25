@@ -85,16 +85,10 @@ fun UnoCardView(
 
     val borderStroke = when {
         isFloatingReject -> BorderStroke(2.5.dp, Color(0xFFEF5350))
-        card.value == UnoValue.WILD_DRAW_TEN || card.value == UnoValue.WILD_DRAW_SIX -> BorderStroke(2.5.dp, Color(0xFFFF5722))
-        card.value == UnoValue.CUSTOM_WILD || card.value == UnoValue.SHUFFLE_HANDS || card.value == UnoValue.WILD_COLOR_ROULETTE -> BorderStroke(2.5.dp, Color(0xFFFFD54F))
+        card.value == UnoValue.CUSTOM_WILD || card.value == UnoValue.SHUFFLE_HANDS -> BorderStroke(2.5.dp, Color(0xFFFFD54F))
         isSelected -> BorderStroke(2.5.dp, Color(0xFFFFD700))
         isPlayable -> BorderStroke(1.5.dp, Color.White)
         else -> BorderStroke(1.dp, Color(0x66FFFFFF))
-    }
-
-    val containerBg = when {
-        card.value.isWild -> Color(0xFF0F172A)
-        else -> card.color.composeColor
     }
 
     Card(
@@ -111,6 +105,7 @@ fun UnoCardView(
                         if (isPlayable) {
                             onClick?.invoke()
                         } else {
+                            // When not matching card is picked, float up for a moment, then smoothly go back inside
                             onUnplayableClick?.invoke()
                             coroutineScope.launch {
                                 isFloatingReject = true
@@ -124,7 +119,7 @@ fun UnoCardView(
         shape = RoundedCornerShape(10.dp),
         border = borderStroke,
         colors = CardDefaults.cardColors(
-            containerColor = containerBg
+            containerColor = card.color.composeColor
         )
     ) {
         Box(
@@ -146,7 +141,7 @@ fun UnoCardView(
                 modifier = Modifier.align(Alignment.Center)
             )
 
-            // Top Left Corner Index
+            // Top Left Index
             CardCornerIndex(
                 symbol = card.value.symbol,
                 modifier = Modifier
@@ -154,7 +149,7 @@ fun UnoCardView(
                     .padding(2.dp)
             )
 
-            // Bottom Right Corner Index
+            // Bottom Right Index
             CardCornerIndex(
                 symbol = card.value.symbol,
                 modifier = Modifier
@@ -175,19 +170,12 @@ private fun CardOvalBadge(
         modifier = modifier
             .rotate(-25f)
             .clip(RoundedCornerShape(percent = 50))
-            .background(if (card.value.isWild) Color(0xFF1E293B) else Color.White)
+            .background(Color.White)
             .padding(3.dp)
     ) {
-        if (card.value.isWild && card.value != UnoValue.CUSTOM_WILD && card.value != UnoValue.SHUFFLE_HANDS) {
+        if (card.value.isWild) {
             // 4-Quadrant Wild circle
             FourColorQuadrant(modifier = Modifier.fillMaxSize())
-        } else if (card.value.isWild) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .clip(RoundedCornerShape(percent = 50))
-                    .background(Color(0xFF0F172A))
-            )
         } else {
             Box(
                 modifier = Modifier
@@ -202,6 +190,7 @@ private fun CardOvalBadge(
 @Composable
 fun FourColorQuadrant(modifier: Modifier = Modifier) {
     Box(modifier = modifier.clip(CircleShape)) {
+        // Red top-left
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -211,6 +200,7 @@ fun FourColorQuadrant(modifier: Modifier = Modifier) {
                     )
                 )
         )
+        // Diagonal quarters simulation with brush or stacked boxes
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -242,9 +232,9 @@ private fun CardCenterContent(
     }
 
     val fontSize = when {
-        symbol.length >= 3 -> 17.sp
-        symbol.length == 2 -> 22.sp
-        else -> 30.sp
+        symbol.length > 2 -> 18.sp
+        symbol.length == 2 -> 24.sp
+        else -> 32.sp
     }
 
     Text(

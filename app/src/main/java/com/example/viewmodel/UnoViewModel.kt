@@ -442,22 +442,6 @@ class UnoViewModel(application: Application) : AndroidViewModel(application) {
         onStateUpdated(nextState)
     }
 
-    fun chooseColorRoulette(color: UnoColor) {
-        val state = _gameState.value
-        val targetIdx = state.pendingRouletteTargetIndex ?: state.currentPlayerIndex
-        if (_networkRole.value == NetworkRole.CLIENT) {
-            wlanClient.sendAction(actionType = UnoNetworkProtocol.ACTION_CHOOSE_COLOR_ROULETTE, chosenColor = color)
-            return
-        }
-
-        val nextState = UnoGameEngine.completeColorRouletteSelection(state, targetIdx, color)
-        _gameState.value = nextState
-        if (_networkRole.value == NetworkRole.HOST) {
-            wlanServer.updateAndBroadcastHostState(nextState)
-        }
-        onStateUpdated(nextState)
-    }
-
     // DRAW CARD: Real Drawn Playable Card UX
     fun drawCard() {
         val state = _gameState.value
@@ -805,11 +789,6 @@ class UnoViewModel(application: Application) : AndroidViewModel(application) {
             }
             is BotAction.ChooseSevenSwap -> {
                 val nextState = UnoGameEngine.executeSevenSwap(state, botIdx, action.targetIndex)
-                _gameState.value = nextState
-                onStateUpdated(nextState)
-            }
-            is BotAction.ChooseColorRoulette -> {
-                val nextState = UnoGameEngine.completeColorRouletteSelection(state, botIdx, action.color)
                 _gameState.value = nextState
                 onStateUpdated(nextState)
             }

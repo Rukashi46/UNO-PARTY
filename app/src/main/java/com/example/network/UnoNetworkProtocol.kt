@@ -70,7 +70,6 @@ object UnoNetworkProtocol {
     const val ACTION_CHOOSE_COLOR = "CHOOSE_COLOR"
     const val ACTION_CHOOSE_CUSTOM_WILD = "CHOOSE_CUSTOM_WILD"
     const val ACTION_CHOOSE_SEVEN_SWAP = "CHOOSE_SEVEN_SWAP"
-    const val ACTION_CHOOSE_COLOR_ROULETTE = "CHOOSE_COLOR_ROULETTE"
     const val ACTION_JUMP_IN = "JUMP_IN"
 
     // Card serialization

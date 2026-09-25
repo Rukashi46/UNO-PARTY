@@ -1,5 +1,8 @@
 package com.example
 
+import android.app.Activity
+import android.content.Context
+import android.content.pm.ActivityInfo
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -9,11 +12,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.model.GamePhase
@@ -23,6 +28,17 @@ import com.example.ui.screens.RulesScreen
 import com.example.ui.screens.StatsScreen
 import com.example.ui.theme.MyApplicationTheme
 import com.example.viewmodel.UnoViewModel
+
+/**
+ * Walks up the Context wrapper chain to find the hosting Activity, so a Composable
+ * deep in the tree (e.g. GameScreen) can request an orientation change. Returns null
+ * if none is found (e.g. in a Preview), in which case callers should no-op.
+ */
+tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is android.content.ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
 
 enum class AppScreen {
     HOME,
@@ -78,6 +94,19 @@ fun UnoAppRoot(
         }
 
         AppScreen.GAME -> {
+            // Gameplay is a fixed LANDSCAPE card table (see design spec) regardless of
+            // the device's rotation lock/auto-rotate setting — force it while this
+            // screen is composed, and restore whatever orientation the app had on entry.
+            val context = LocalContext.current
+            DisposableEffect(Unit) {
+                val activity = context.findActivity()
+                val previousOrientation = activity?.requestedOrientation
+                activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                onDispose {
+                    activity?.requestedOrientation = previousOrientation ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                }
+            }
+
             BackHandler {
                 viewModel.quitToLobby()
                 currentScreen = AppScreen.HOME
@@ -95,7 +124,6 @@ fun UnoAppRoot(
                 onSelectWildColor = { color -> viewModel.chooseWildColor(color) },
                 onSelectCustomWildEffect = { effect -> viewModel.chooseCustomWildEffect(effect) },
                 onSelectSevenSwapTarget = { targetIdx -> viewModel.chooseSevenSwapTarget(targetIdx) },
-                onSelectColorRouletteColor = { color -> viewModel.chooseColorRoulette(color) },
                 onTogglePassAndPlayReveal = { viewModel.togglePassAndPlayHandVisibility() },
                 onNextRound = { viewModel.nextRound() },
                 onPlayUnplayableCard = { viewModel.playUnplayableCardFeedback() },

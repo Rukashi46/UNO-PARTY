@@ -977,9 +977,9 @@ fun HomeScreen(
 
                     Spacer(modifier = Modifier.height(8.dp))
 
-                    // Deck Type Selection (Classic 108 vs Modern 112 vs No Mercy 168)
+                    // Deck Type Selection (Classic 108 vs Modern 112)
                     Text(
-                        text = "Deck Preset",
+                        text = "Deck Type",
                         color = Color(0xFFFFD54F),
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold
@@ -987,82 +987,39 @@ fun HomeScreen(
                     Spacer(modifier = Modifier.height(4.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Surface(
                             modifier = Modifier
                                 .weight(1f)
                                 .clickable(enabled = isHostUser) {
-                                    currentRules = currentRules.copy(deckType = DeckType.CLASSIC_108, includeCustomWilds = false, noMercy = false)
+                                    currentRules = currentRules.copy(deckType = DeckType.CLASSIC_108, includeCustomWilds = false)
                                     viewModel.updateRules(currentRules, selectedPresetName)
                                 },
                             shape = RoundedCornerShape(8.dp),
                             color = if (currentRules.deckType == DeckType.CLASSIC_108) Color(0xFF1E3A8A) else Color(0xFF0F172A),
                             border = BorderStroke(1.dp, if (currentRules.deckType == DeckType.CLASSIC_108) Color(0xFF60A5FA) else Color(0x33FFFFFF))
                         ) {
-                            Column(modifier = Modifier.padding(6.dp)) {
-                                Text("Classic", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 11.sp)
-                                Text("108 Cards", color = Color(0xFF93C5FD), fontSize = 10.sp)
+                            Column(modifier = Modifier.padding(8.dp)) {
+                                Text("Classic 108 Cards", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                                Text("24 Action + 8 Wild", color = Color(0xFF93C5FD), fontSize = 10.sp)
                             }
                         }
                         Surface(
                             modifier = Modifier
                                 .weight(1f)
                                 .clickable(enabled = isHostUser) {
-                                    currentRules = currentRules.copy(deckType = DeckType.MODERN_112, includeCustomWilds = true, noMercy = false)
+                                    currentRules = currentRules.copy(deckType = DeckType.MODERN_112, includeCustomWilds = true)
                                     viewModel.updateRules(currentRules, selectedPresetName)
                                 },
                             shape = RoundedCornerShape(8.dp),
                             color = if (currentRules.deckType == DeckType.MODERN_112) Color(0xFF4C1D95) else Color(0xFF0F172A),
                             border = BorderStroke(1.dp, if (currentRules.deckType == DeckType.MODERN_112) Color(0xFFA78BFA) else Color(0x33FFFFFF))
                         ) {
-                            Column(modifier = Modifier.padding(6.dp)) {
-                                Text("Modern", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 11.sp)
-                                Text("112 Cards", color = Color(0xFFDDD6FE), fontSize = 10.sp)
+                            Column(modifier = Modifier.padding(8.dp)) {
+                                Text("Modern 112 Cards", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                                Text("+1 Shuffle + 3 Wilds", color = Color(0xFFDDD6FE), fontSize = 10.sp)
                             }
-                        }
-                        Surface(
-                            modifier = Modifier
-                                .weight(1f)
-                                .clickable(enabled = isHostUser) {
-                                    currentRules = currentRules.copy(
-                                        deckType = DeckType.NO_MERCY_168,
-                                        includeCustomWilds = false,
-                                        noMercy = true,
-                                        mercyRule = true,
-                                        sevenZeroRule = true,
-                                        forcePlay = true
-                                    )
-                                    selectedPresetName = "No Mercy Rule"
-                                    viewModel.updateRules(currentRules, "No Mercy Rule")
-                                },
-                            shape = RoundedCornerShape(8.dp),
-                            color = if (currentRules.deckType == DeckType.NO_MERCY_168) Color(0xFF7F1D1D) else Color(0xFF0F172A),
-                            border = BorderStroke(1.dp, if (currentRules.deckType == DeckType.NO_MERCY_168) Color(0xFFEF4444) else Color(0x33FFFFFF))
-                        ) {
-                            Column(modifier = Modifier.padding(6.dp)) {
-                                Text("No Mercy", color = Color(0xFFFFD54F), fontWeight = FontWeight.Bold, fontSize = 11.sp)
-                                Text("168 Cards", color = Color(0xFFFCA5A5), fontSize = 10.sp)
-                            }
-                        }
-                    }
-
-                    if (currentRules.deckType == DeckType.NO_MERCY_168) {
-                        Surface(
-                            color = Color(0xFF450A0A),
-                            shape = RoundedCornerShape(8.dp),
-                            border = BorderStroke(1.dp, Color(0xFFDC2626)),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(top = 6.dp)
-                        ) {
-                            Text(
-                                text = "NO MERCY (168 Cards): 7's Swap • 0's Pass • Stacking • 25-Card Mercy • Wild +6 & +10 • Color Roulette • Discard All • Skip Everyone",
-                                color = Color(0xFFFECACA),
-                                fontSize = 10.sp,
-                                lineHeight = 14.sp,
-                                modifier = Modifier.padding(8.dp)
-                            )
                         }
                     }
 

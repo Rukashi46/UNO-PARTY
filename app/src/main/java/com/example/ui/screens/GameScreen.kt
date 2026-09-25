@@ -39,6 +39,7 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.MenuBook
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -57,12 +58,12 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -110,7 +111,6 @@ fun GameScreen(
     onSelectWildColor: (UnoColor) -> Unit,
     onSelectCustomWildEffect: (CustomWildEffect) -> Unit,
     onSelectSevenSwapTarget: (Int) -> Unit,
-    onSelectColorRouletteColor: ((UnoColor) -> Unit)? = null,
     onTogglePassAndPlayReveal: () -> Unit,
     onNextRound: () -> Unit,
     onQuit: () -> Unit,
@@ -159,155 +159,22 @@ fun GameScreen(
 
     val handScrollState = rememberScrollState()
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                text = "Round ${gameState.roundNumber}",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 16.sp
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            if (gameState.mode == GameMode.ONLINE_ROOM) {
-                                Surface(
-                                    color = Color(0xFF1B5E20),
-                                    shape = RoundedCornerShape(10.dp)
-                                ) {
-                                    Text(
-                                        text = "🟢 ${gameState.roomCode ?: "ONLINE"}",
-                                        color = Color(0xFFA5D6A7),
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                    )
-                                }
-                                Spacer(modifier = Modifier.width(6.dp))
-                            }
-                            Surface(
-                                color = Color(0xFFE53935),
-                                shape = RoundedCornerShape(10.dp)
-                            ) {
-                                Text(
-                                    text = "${gameState.players.size} Players",
-                                    color = Color.White,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                )
-                            }
-                        }
-                        Text(
-                            text = if (isMyTurn) "👉 Your Turn!" else "⏳ ${activePlayer?.name}'s Turn",
-                            color = if (isMyTurn) Color(0xFFFFD54F) else Color(0xFF94A3B8),
-                            fontSize = 12.sp
-                        )
-                    }
-                },
-                navigationIcon = {
-                    IconButton(onClick = { showQuitConfirmation = true }) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Leave Match",
-                            tint = Color.White
-                        )
-                    }
-                },
-                actions = {
-                    // Game log button
-                    IconButton(onClick = { showLogsSheet = true }) {
-                        Icon(
-                            imageVector = Icons.Default.FormatListBulleted,
-                            contentDescription = "Game Feed",
-                            tint = Color(0xFF64B5F6)
-                        )
-                    }
-                    // Rules inspector / editor button
-                    IconButton(
-                        onClick = {
-                            if (isHost && onUpdateRules != null) {
-                                editableRules = gameState.rules
-                                showRuleEditor = true
-                            } else {
-                                showRulesModal = true
-                            }
-                        }
-                    ) {
-                        Icon(
-                            imageVector = if (isHost && onUpdateRules != null) Icons.Default.Edit else Icons.Default.MenuBook,
-                            contentDescription = if (isHost && onUpdateRules != null) "Edit Match Rules" else "Rules",
-                            tint = if (isHost && onUpdateRules != null) Color(0xFFFFD54F) else Color(0xFF90CAF9)
-                        )
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = Color(0xFF0F172A),
-                    titleContentColor = Color.White
-                )
-            )
-        },
-        containerColor = Color(0xFF0F172A)
-    ) { paddingValues ->
-        Box(
-            modifier = modifier
-                .fillMaxSize()
-                .padding(paddingValues)
-                .background(
-                    Brush.verticalGradient(
-                        listOf(
-                            Color(0xFF0F172A),
-                            Color(0xFF1E293B),
-                            Color(0xFF0B132B)
-                        )
-                    )
-                )
+    var showGearMenu by remember { mutableStateOf(false) }
+
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(com.example.ui.theme.ArenaPalette.tableAtmosphere)
+    ) {
+        Column(
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.SpaceBetween
         ) {
-            Column(
-                modifier = Modifier.fillMaxSize(),
-                verticalArrangement = Arrangement.SpaceBetween
-            ) {
-                // Persistent Live Players Card Tracker Bar (Shows every player's card count at a glance!)
-                PlayersCardTrackerBar(
-                    players = gameState.players,
-                    currentPlayerIndex = gameState.currentPlayerIndex,
-                    humanIndex = humanIndex,
-                    onPlayerTap = { clickedIdx ->
-                        if (gameState.gamePhase == GamePhase.HAND_SWAP_SELECTION) {
-                            onSelectSevenSwapTarget(clickedIdx)
-                        } else if (clickedIdx != humanIndex) {
-                            onCatchUno(clickedIdx)
-                        }
-                    }
-                )
+            Spacer(modifier = Modifier.height(0.dp))
 
-                // Recent ticker alert positioned cleanly below tracker bar (NOT covering opponents on the table)
-                gameState.logs.lastOrNull()?.let { lastLog ->
-                    Surface(
-                        color = if (lastLog.isAlert) Color(0xFFE53935).copy(alpha = 0.92f) else Color(0xDD1E293B),
-                        shape = RoundedCornerShape(8.dp),
-                        border = BorderStroke(1.dp, Color(0x33FFFFFF)),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 2.dp)
-                    ) {
-                        Text(
-                            text = lastLog.text,
-                            color = Color.White,
-                            fontSize = 11.sp,
-                            fontWeight = if (lastLog.isAlert) FontWeight.Bold else FontWeight.Normal,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                }
-
-                // Arena Card Table Layout (Opponents dynamically distributed around central deck & discard)
-                Box(
-                    modifier = Modifier
+            // Arena Card Table Layout (Opponents dynamically distributed around central deck & discard)
+            Box(
+                modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f)
                 ) {
@@ -560,8 +427,76 @@ fun GameScreen(
                     }
                 }
             }
+
+            // Minimal floating header — back/quit + round on the left, a single
+            // settings gear on the right that opens log/rules (keeps the header
+            // compact instead of stacking multiple icon buttons, per design spec).
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 10.dp, start = 14.dp, end = 14.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Top
+            ) {
+                Surface(
+                    color = Color(0x66000000),
+                    shape = RoundedCornerShape(20.dp),
+                    modifier = Modifier.clickable { showQuitConfirmation = true }
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Leave Match",
+                            tint = Color.White,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Round ${gameState.roundNumber} · ${gameState.players.size} Players",
+                            color = Color.White,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+
+                Box {
+                    Surface(
+                        color = Color(0x66000000),
+                        shape = androidx.compose.foundation.shape.CircleShape,
+                        modifier = Modifier.clickable { showGearMenu = true }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Settings,
+                            contentDescription = "Menu",
+                            tint = Color.White,
+                            modifier = Modifier.padding(8.dp).size(18.dp)
+                        )
+                    }
+                    DropdownMenu(expanded = showGearMenu, onDismissRequest = { showGearMenu = false }) {
+                        DropdownMenuItem(
+                            text = { Text("Game Log") },
+                            onClick = { showGearMenu = false; showLogsSheet = true }
+                        )
+                        DropdownMenuItem(
+                            text = { Text(if (isHost && onUpdateRules != null) "Edit Match Rules" else "View Rules") },
+                            onClick = {
+                                showGearMenu = false
+                                if (isHost && onUpdateRules != null) {
+                                    editableRules = gameState.rules
+                                    showRuleEditor = true
+                                } else {
+                                    showRulesModal = true
+                                }
+                            }
+                        )
+                    }
+                }
+            }
         }
-    }
 
     // Modal: Wild Color Picker
     if (gameState.gamePhase == GamePhase.COLOR_SELECTION) {
@@ -574,17 +509,6 @@ fun GameScreen(
     if (gameState.gamePhase == GamePhase.CUSTOM_WILD_EFFECT_SELECTION) {
         CustomWildEffectDialog(
             onEffectSelected = { effect -> onSelectCustomWildEffect(effect) }
-        )
-    }
-
-    // Modal: Wild Color Roulette Target Color Picker
-    if (gameState.gamePhase == GamePhase.COLOR_ROULETTE_TARGET_SELECTION) {
-        val targetIdx = gameState.pendingRouletteTargetIndex ?: gameState.currentPlayerIndex
-        val targetPlayer = gameState.players.getOrNull(targetIdx)
-        val targetName = targetPlayer?.name ?: "Player"
-        com.example.ui.components.WildColorRouletteDialog(
-            targetPlayerName = targetName,
-            onColorSelected = { color -> onSelectColorRouletteColor?.invoke(color) }
         )
     }
 

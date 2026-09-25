@@ -347,11 +347,6 @@ class UnoWlanServer(
                 val targetIndex = json.getInt("targetIndex")
                 nextState = UnoGameEngine.executeSevenSwap(state, playerIdx, targetIndex)
             }
-            UnoNetworkProtocol.ACTION_CHOOSE_COLOR_ROULETTE -> {
-                val colorStr = if (json.has("chosenColor")) json.getString("chosenColor") else json.getString("color")
-                val color = UnoColor.valueOf(colorStr)
-                nextState = UnoGameEngine.completeColorRouletteSelection(state, playerIdx, color)
-            }
             UnoNetworkProtocol.ACTION_JUMP_IN -> {
                 val cardJson = json.getJSONObject("card")
                 val card = UnoNetworkProtocol.jsonToCard(cardJson)
