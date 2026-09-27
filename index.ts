@@ -1,4 +1,8 @@
 import { registerRootComponent } from 'expo';
+import { LogBox } from 'react-native';
+
+// Suppress yellow LogBox popups in the application
+LogBox.ignoreAllLogs(true);
 
 import App from './App';
 
