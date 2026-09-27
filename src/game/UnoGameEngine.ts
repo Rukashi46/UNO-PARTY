@@ -1,4 +1,4 @@
-import { UnoCard, UnoColor, UnoValue, Player, GameRules, GamePhase, CustomWildPower } from '../types/game';
+import { UnoCard, UnoColor, UnoValue, Player, GameRules, GamePhase, CustomWildPower, GameEndMode, PlayerStatus } from '../types/game';
 import { UnoDeckService } from './UnoDeckService';
 
 export interface EngineResult {
@@ -32,6 +32,37 @@ export type EngineEvent =
   | { type: 'PLAYER_ELIMINATED'; playerId: string; reason: string }
   | { type: 'PLAYER_WON'; winner: Player };
 
+export interface ShuffleHandsResult {
+  updatedPlayers: Player[];
+  cardCounts: Record<string, number>;
+  initialCardCounts: Record<string, number>;
+  eligiblePlayerIds: string[];
+  dealingOrder: string[];
+  dealSequence: { playerId: string; card: UnoCard }[];
+  totalCards: number;
+}
+
+export interface FinalRankItem {
+  playerId: string;
+  name: string;
+  avatar: string;
+  status: PlayerStatus;
+  rank: number;
+  cardCount: number;
+  isHuman: boolean;
+}
+
+export interface CompletionEvaluationResult {
+  updatedPlayers: Player[];
+  finishingOrder: string[];
+  eliminatedOrder: string[];
+  justFinishedPlayerId?: string;
+  justEliminatedPlayerId?: string;
+  isMatchOver: boolean;
+  winner: Player | null;
+  finalResults: FinalRankItem[];
+}
+
 export class UnoGameEngine {
   /**
    * Helper: ensure cards in draw pile by recycling discard pile if necessary.
@@ -50,7 +81,26 @@ export class UnoGameEngine {
   }
 
   /**
-   * Calculate next active player index, taking into account direction, steps, and skipping eliminated players.
+   * Centralized helper: returns all eligible active players participating in gameplay.
+   * Excludes FINISHED and ELIMINATED players.
+   */
+  static getEligibleActivePlayers(players: Player[]): Player[] {
+    return players.filter(p => {
+      if (p.status === 'FINISHED' || p.status === 'ELIMINATED' || p.isEliminated) {
+        return false;
+      }
+      if (p.status === 'ACTIVE') {
+        return true;
+      }
+      // Fallback for players without explicit status:
+      return p.cardCount > 0 || (p.hand && p.hand.length > 0);
+    });
+  }
+
+  /**
+   * Authoritative turn rotation helper:
+   * Skips FINISHED and ELIMINATED players.
+   * Respects current direction ('CW' | 'CCW') and stepCount (normal=1, skip=2, etc.).
    */
   static getNextActivePlayerIndex(
     players: Player[],
@@ -65,13 +115,21 @@ export class UnoGameEngine {
     let stepsLeft = stepCount;
     const dirStep = direction === 'CW' ? 1 : -1;
 
-    while (stepsLeft > 0) {
+    let loopCount = 0;
+    while (stepsLeft > 0 && loopCount < total * 2) {
       index = (index + dirStep + total) % total;
-      // Skip eliminated or finished players
-      if (!players[index].isEliminated && players[index].hand.length > 0) {
+      loopCount++;
+      const p = players[index];
+      const isEligible =
+        p &&
+        !p.isEliminated &&
+        p.status !== 'FINISHED' &&
+        p.status !== 'ELIMINATED' &&
+        (p.status === 'ACTIVE' || p.cardCount > 0 || (p.hand && p.hand.length > 0));
+
+      if (isEligible) {
         stepsLeft--;
       }
-      // Failsafe loop prevention
       if (index === currentIndex && stepsLeft === stepCount) {
         break;
       }
@@ -81,61 +139,194 @@ export class UnoGameEngine {
   }
 
   /**
-   * Check for winner or elimination according to rules.
+   * Centralized Authoritative Completion Evaluation:
+   * Evaluates player completion (hand = 0) and Mercy rule eliminations (25+ cards),
+   * updates player statuses (ACTIVE, FINISHED, ELIMINATED),
+   * tracks finishingOrder and eliminatedOrder, and determines whether match is over
+   * based on GameEndMode ('FIRST_PLAYER_WINS' vs 'PLAY_UNTIL_LAST_PLAYER').
+   */
+  static evaluatePlayerCompletion(
+    players: Player[],
+    rules: GameRules,
+    currentFinishingOrder: string[] = [],
+    currentEliminatedOrder: string[] = []
+  ): CompletionEvaluationResult {
+    const finishingOrder = [...currentFinishingOrder];
+    const eliminatedOrder = [...currentEliminatedOrder];
+    let justFinishedPlayerId: string | undefined;
+    let justEliminatedPlayerId: string | undefined;
+
+    // 1. Process player statuses
+    let updatedPlayers: Player[] = players.map(p => {
+      const cardCount = p.hand ? p.hand.length : p.cardCount;
+      let status: PlayerStatus = p.status || (p.isEliminated ? 'ELIMINATED' : 'ACTIVE');
+      let isEliminated = p.isEliminated || status === 'ELIMINATED';
+
+      // 25-card Mercy Rule (No Mercy only)
+      if (rules.deckType === 'NO_MERCY' && rules.mercy25Cards && !isEliminated && status !== 'FINISHED') {
+        if (cardCount >= 25) {
+          status = 'ELIMINATED';
+          isEliminated = true;
+          if (!eliminatedOrder.includes(p.id)) {
+            eliminatedOrder.push(p.id);
+            justEliminatedPlayerId = p.id;
+          }
+        }
+      }
+
+      // Hand emptied (Finished)
+      if (!isEliminated && status !== 'ELIMINATED' && cardCount === 0 && status !== 'FINISHED') {
+        status = 'FINISHED';
+        if (!finishingOrder.includes(p.id)) {
+          finishingOrder.push(p.id);
+          justFinishedPlayerId = p.id;
+        }
+      }
+
+      const finishRank = finishingOrder.includes(p.id) ? finishingOrder.indexOf(p.id) + 1 : p.finishRank;
+
+      return {
+        ...p,
+        cardCount,
+        status,
+        isEliminated,
+        finishRank,
+      };
+    });
+
+    const activePlayers = this.getEligibleActivePlayers(updatedPlayers);
+    const endMode = rules.gameEndMode || 'FIRST_PLAYER_WINS';
+    let isMatchOver = false;
+    let winner: Player | null = null;
+
+    if (endMode === 'FIRST_PLAYER_WINS') {
+      if (finishingOrder.length >= 1) {
+        isMatchOver = true;
+        winner = updatedPlayers.find(p => p.id === finishingOrder[0]) || null;
+      } else if (rules.deckType === 'NO_MERCY' && activePlayers.length === 1 && updatedPlayers.length > 1) {
+        // Last standing player wins No Mercy by elimination of all opponents
+        isMatchOver = true;
+        winner = activePlayers[0];
+        if (!finishingOrder.includes(winner.id)) {
+          finishingOrder.push(winner.id);
+        }
+      } else if (activePlayers.length === 0) {
+        isMatchOver = true;
+      }
+    } else {
+      // PLAY_UNTIL_LAST_PLAYER
+      if (activePlayers.length === 0) {
+        isMatchOver = true;
+      } else if (activePlayers.length === 1 && (finishingOrder.length > 0 || eliminatedOrder.length > 0)) {
+        // Only 1 player left holding cards: they take the final rank!
+        const lastPlayer = activePlayers[0];
+        if (!finishingOrder.includes(lastPlayer.id)) {
+          finishingOrder.push(lastPlayer.id);
+        }
+        updatedPlayers = updatedPlayers.map(p =>
+          p.id === lastPlayer.id
+            ? { ...p, status: 'FINISHED', finishRank: finishingOrder.length }
+            : p
+        );
+        isMatchOver = true;
+      }
+
+      if (finishingOrder.length > 0) {
+        winner = updatedPlayers.find(p => p.id === finishingOrder[0]) || null;
+      }
+    }
+
+    // Build complete final results
+    const finalResults: FinalRankItem[] = [];
+    finishingOrder.forEach((id, idx) => {
+      const p = updatedPlayers.find(pl => pl.id === id);
+      if (p) {
+        finalResults.push({
+          playerId: p.id,
+          name: p.name,
+          avatar: p.avatar,
+          status: 'FINISHED',
+          rank: idx + 1,
+          cardCount: p.cardCount,
+          isHuman: p.isHuman,
+        });
+      }
+    });
+
+    updatedPlayers.forEach(p => {
+      if (!finishingOrder.includes(p.id) && !eliminatedOrder.includes(p.id)) {
+        finalResults.push({
+          playerId: p.id,
+          name: p.name,
+          avatar: p.avatar,
+          status: p.status || 'ACTIVE',
+          rank: finalResults.length + 1,
+          cardCount: p.cardCount,
+          isHuman: p.isHuman,
+        });
+      }
+    });
+
+    eliminatedOrder.forEach(id => {
+      const p = updatedPlayers.find(pl => pl.id === id);
+      if (p && !finalResults.some(r => r.playerId === id)) {
+        finalResults.push({
+          playerId: p.id,
+          name: p.name,
+          avatar: p.avatar,
+          status: 'ELIMINATED',
+          rank: finalResults.length + 1,
+          cardCount: p.cardCount,
+          isHuman: p.isHuman,
+        });
+      }
+    });
+
+    return {
+      updatedPlayers,
+      finishingOrder,
+      eliminatedOrder,
+      justFinishedPlayerId,
+      justEliminatedPlayerId,
+      isMatchOver,
+      winner,
+      finalResults,
+    };
+  }
+
+  /**
+   * Check for winner or elimination according to rules (delegates to evaluatePlayerCompletion).
    */
   static checkWinAndEliminations(
     players: Player[],
     rules: GameRules
   ): { updatedPlayers: Player[]; winner: Player | null; eliminated: Player[] } {
-    let updated = players.map(p => ({ ...p, cardCount: p.hand.length }));
-    const eliminated: Player[] = [];
-
-    // Rule: Mercy rule in No Mercy (25 cards = eliminated)
-    if (rules.deckType === 'NO_MERCY' && rules.mercy25Cards) {
-      updated = updated.map(p => {
-        if (!p.isEliminated && p.hand.length >= 25) {
-          eliminated.push(p);
-          return { ...p, isEliminated: true };
-        }
-        return p;
-      });
-    }
-
-    // Win condition 1: Hand size reaches 0
-    const emptyHandPlayer = updated.find(p => !p.isEliminated && p.hand.length === 0);
-    if (emptyHandPlayer) {
-      return { updatedPlayers: updated, winner: emptyHandPlayer, eliminated };
-    }
-
-    // Win condition 2: In No Mercy, last active player standing wins
-    if (rules.deckType === 'NO_MERCY') {
-      const activeStanding = updated.filter(p => !p.isEliminated);
-      if (activeStanding.length === 1) {
-        return { updatedPlayers: updated, winner: activeStanding[0], eliminated };
-      }
-    }
-
-    return { updatedPlayers: updated, winner: null, eliminated };
+    const res = this.evaluatePlayerCompletion(players, rules);
+    const eliminated = res.updatedPlayers.filter(p => p.isEliminated || p.status === 'ELIMINATED');
+    return { updatedPlayers: res.updatedPlayers, winner: res.winner, eliminated };
   }
 
+
   /**
-   * Pure Engine Action: SHUFFLE_AND_REDEAL_HANDS (Dedicated Shuffle Hands & Custom Wild)
-   * 1. Collect all active players' cards into combined pool.
-   * 2. Shuffle entire pool.
-   * 3. Redistribute cards one-by-one starting with player next to card player in current direction.
-   * 4. Continue until pool is empty.
+   * Pure Authoritative Engine Action: executeShuffleHands (Dedicated Shuffle Hands & Custom Wild)
+   * 1. Gather cards from all eligible active (non-eliminated) players.
+   * 2. Shuffle entire combined pool exactly once.
+   * 3. Determine dealing order starting from player immediately next to card player in current direction.
+   * 4. Deal one by one sequentially until pool is empty.
    */
-  static executeShuffleAndRedealHands(
+  static executeShuffleHands(
     players: Player[],
     cardPlayerIndex: number,
     direction: 'CW' | 'CCW'
-  ): { updatedPlayers: Player[]; cardCounts: Record<string, number> } {
+  ): ShuffleHandsResult {
     const eligibleIndices: number[] = [];
     const pool: UnoCard[] = [];
+    const initialCardCounts: Record<string, number> = {};
 
-    // 1. Gather cards from non-eliminated players
+    // 1. Gather cards from eligible active players
     players.forEach((p, idx) => {
-      if (!p.isEliminated) {
+      initialCardCounts[p.id] = (p.hand || []).length;
+      if (!p.isEliminated && p.status !== 'FINISHED' && p.status !== 'ELIMINATED' && p.hand && p.hand.length > 0) {
         eligibleIndices.push(idx);
         pool.push(...p.hand);
       }
@@ -145,27 +336,34 @@ export class UnoGameEngine {
       return {
         updatedPlayers: players,
         cardCounts: players.reduce((acc, p) => ({ ...acc, [p.id]: p.hand.length }), {}),
+        initialCardCounts,
+        eligiblePlayerIds: [],
+        dealingOrder: [],
+        dealSequence: [],
+        totalCards: 0,
       };
     }
 
     // 2. Shuffle entire combined pool
-    const shuffledPool = UnoDeckService.shuffle(pool);
+    const shuffledPool = UnoDeckService.shuffle([...pool]);
 
     // 3. Determine dealing order: start with player immediately next to card player in current direction
-    const dealingOrder: number[] = [];
+    const dealingOrderIndices: number[] = [];
     let cur = cardPlayerIndex;
     for (let i = 0; i < players.length; i++) {
       cur = this.getNextActivePlayerIndex(players, cur, direction, 1);
-      if (!dealingOrder.includes(cur) && eligibleIndices.includes(cur)) {
-        dealingOrder.push(cur);
+      if (!dealingOrderIndices.includes(cur) && eligibleIndices.includes(cur)) {
+        dealingOrderIndices.push(cur);
       }
-      if (dealingOrder.length === eligibleIndices.length) break;
+      if (dealingOrderIndices.length === eligibleIndices.length) break;
     }
 
     // Failsafe fallback if dealing order missed anyone eligible
     eligibleIndices.forEach(idx => {
-      if (!dealingOrder.includes(idx)) dealingOrder.push(idx);
+      if (!dealingOrderIndices.includes(idx)) dealingOrderIndices.push(idx);
     });
+
+    const dealingOrder = dealingOrderIndices.map(idx => players[idx].id);
 
     // 4. Clear all eligible hands
     const newHands: Record<number, UnoCard[]> = {};
@@ -174,12 +372,14 @@ export class UnoGameEngine {
     });
 
     // 5. Deal one by one sequentially
+    const dealSequence: { playerId: string; card: UnoCard }[] = [];
     let dealPtr = 0;
     while (shuffledPool.length > 0) {
-      const recipientIdx = dealingOrder[dealPtr % dealingOrder.length];
+      const recipientIdx = dealingOrderIndices[dealPtr % dealingOrderIndices.length];
       const card = shuffledPool.pop();
       if (card) {
         newHands[recipientIdx].push(card);
+        dealSequence.push({ playerId: players[recipientIdx].id, card });
       }
       dealPtr++;
     }
@@ -201,7 +401,26 @@ export class UnoGameEngine {
       cardCounts[p.id] = p.hand.length;
     });
 
-    return { updatedPlayers, cardCounts };
+    return {
+      updatedPlayers,
+      cardCounts,
+      initialCardCounts,
+      eligiblePlayerIds: eligibleIndices.map(idx => players[idx].id),
+      dealingOrder,
+      dealSequence,
+      totalCards: pool.length,
+    };
+  }
+
+  /**
+   * Alias pointing to the exact same authoritative executeShuffleHands implementation
+   */
+  static executeShuffleAndRedealHands(
+    players: Player[],
+    cardPlayerIndex: number,
+    direction: 'CW' | 'CCW'
+  ): ShuffleHandsResult {
+    return this.executeShuffleHands(players, cardPlayerIndex, direction);
   }
 
   /**
@@ -240,7 +459,7 @@ export class UnoGameEngine {
     players: Player[],
     direction: 'CW' | 'CCW'
   ): { updatedPlayers: Player[]; cardCounts: Record<string, number> } {
-    const activePlayers = players.filter(p => !p.isEliminated);
+    const activePlayers = this.getEligibleActivePlayers(players);
     if (activePlayers.length <= 1) {
       return {
         updatedPlayers: players,

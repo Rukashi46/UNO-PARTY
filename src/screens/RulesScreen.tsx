@@ -78,6 +78,64 @@ export const RulesScreen: React.FC<RulesScreenProps> = ({
           </View>
         )}
 
+        {/* Game End Mode Section (Requirement 1, 14) */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>GAME END</Text>
+          <View style={styles.rulesCard}>
+            <Pressable
+              style={[
+                styles.modeOptionRow,
+                (currentRules.gameEndMode || 'FIRST_PLAYER_WINS') === 'FIRST_PLAYER_WINS' && styles.modeOptionActive,
+              ]}
+              onPress={() => {
+                if (!isHost) return;
+                NativeEffectsService.triggerCardSelect();
+                const updated = { ...currentRules, gameEndMode: 'FIRST_PLAYER_WINS' as const };
+                setCurrentRules(updated);
+                onUpdateRules?.(updated);
+              }}
+              disabled={!isHost}
+            >
+              <View style={styles.radioOuter}>
+                {(currentRules.gameEndMode || 'FIRST_PLAYER_WINS') === 'FIRST_PLAYER_WINS' && (
+                  <View style={styles.radioInner} />
+                )}
+              </View>
+              <View style={styles.modeOptionTextWrap}>
+                <Text style={styles.ruleName}>First Player Wins</Text>
+                <Text style={styles.ruleSubtitle}>First player to empty their hand wins immediately.</Text>
+              </View>
+            </Pressable>
+
+            <View style={styles.divider} />
+
+            <Pressable
+              style={[
+                styles.modeOptionRow,
+                currentRules.gameEndMode === 'PLAY_UNTIL_LAST_PLAYER' && styles.modeOptionActive,
+              ]}
+              onPress={() => {
+                if (!isHost) return;
+                NativeEffectsService.triggerCardSelect();
+                const updated = { ...currentRules, gameEndMode: 'PLAY_UNTIL_LAST_PLAYER' as const };
+                setCurrentRules(updated);
+                onUpdateRules?.(updated);
+              }}
+              disabled={!isHost}
+            >
+              <View style={styles.radioOuter}>
+                {currentRules.gameEndMode === 'PLAY_UNTIL_LAST_PLAYER' && (
+                  <View style={styles.radioInner} />
+                )}
+              </View>
+              <View style={styles.modeOptionTextWrap}>
+                <Text style={styles.ruleName}>Play Until Last Player</Text>
+                <Text style={styles.ruleSubtitle}>Continue playing after players finish. Record the complete finishing order.</Text>
+              </View>
+            </Pressable>
+          </View>
+        </View>
+
         {/* Draw & Stack Section */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>DRAW & STACK</Text>
@@ -323,5 +381,34 @@ const styles = StyleSheet.create({
   divider: {
     height: 1,
     backgroundColor: 'rgba(255, 255, 255, 0.06)',
+  },
+  modeOptionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 14,
+    borderRadius: 14,
+    paddingHorizontal: 8,
+    gap: 12,
+  },
+  modeOptionActive: {
+    backgroundColor: 'rgba(245, 158, 11, 0.1)',
+  },
+  radioOuter: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 2,
+    borderColor: COLORS.unoYellow,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  radioInner: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: COLORS.unoYellow,
+  },
+  modeOptionTextWrap: {
+    flex: 1,
   },
 });

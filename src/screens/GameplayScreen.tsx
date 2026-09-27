@@ -15,9 +15,10 @@ import { NativeRouletteColorModal } from '../components/modals/NativeRouletteCol
 import { NativeUnoToast } from '../components/gameplay/NativeUnoToast';
 import { NativeGameOverModal } from '../components/modals/NativeGameOverModal';
 import { AnimatedFlightCard } from '../components/gameplay/AnimatedFlightCard';
-import { UnoCard, UnoColor, Player, GameRules, CustomWildPower, DeckType, PlayerController } from '../types/game';
+import { ShuffleHandsAnimation, ShuffleParticipant } from '../components/gameplay/ShuffleHandsAnimation';
+import { UnoCard, UnoColor, Player, GameRules, CustomWildPower, DeckType, PlayerController, GameEndMode, PlayerStatus } from '../types/game';
 import { UnoDeckService } from '../game/UnoDeckService';
-import { UnoGameEngine } from '../game/UnoGameEngine';
+import { UnoGameEngine, ShuffleHandsResult, FinalRankItem } from '../game/UnoGameEngine';
 import { COLORS, COLOR_MAP } from '../constants/theme';
 import { NativeEffectsService } from '../services/NativeEffects';
 import { MultiplayerSession } from '../multiplayer/MultiplayerSession';
@@ -26,6 +27,7 @@ export type ActionLockState =
   | 'IDLE'
   | 'PLAYING_CARD'
   | 'DRAWING_CARD'
+  | 'SHUFFLING_HANDS'
   | 'CHOOSING_WILD_COLOR'
   | 'CHOOSING_CUSTOM_WILD_POWER'
   | 'CHOOSING_SWAP_TARGET'
@@ -143,8 +145,31 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
   });
   const pendingFlightResolve = useRef<(() => void) | null>(null);
 
-  // Winner State
+  // Shuffle Hands Cinematic Animation State
+  const [shuffleAnimationConfig, setShuffleAnimationConfig] = useState<{
+    visible: boolean;
+    cardPlayerId: string;
+    cardPlayerName: string;
+    participants: ShuffleParticipant[];
+    dealSequence: string[];
+    localNewHand: UnoCard[];
+    totalCards: number;
+    pendingCard?: UnoCard | null;
+  } | null>(null);
+
+  const pendingShuffleResultRef = useRef<{
+    result: ShuffleHandsResult;
+    cardPlayerId: string;
+    pendingCard?: UnoCard | null;
+  } | null>(null);
+
+  // Winner & Finishing Order State (Requirement 1, 4, 5, 6, 19)
   const [winner, setWinner] = useState<{ name: string; avatar: string; isHuman: boolean } | null>(null);
+  const [finishingOrder, setFinishingOrder] = useState<string[]>([]);
+  const finishingOrderRef = useRef<string[]>([]);
+  const [eliminatedOrder, setEliminatedOrder] = useState<string[]>([]);
+  const eliminatedOrderRef = useRef<string[]>([]);
+  const [finalResults, setFinalResults] = useState<FinalRankItem[]>([]);
 
   // Feed Announcements
   const [announcement, setAnnouncement] = useState<{ text: string; highlight: string; color: string }>({
@@ -192,6 +217,13 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
       botTimerRef.current = null;
     }
 
+    // Reset finishing orders
+    finishingOrderRef.current = [];
+    eliminatedOrderRef.current = [];
+    setFinishingOrder([]);
+    setEliminatedOrder([]);
+    setFinalResults([]);
+
     // Part 1: exactly 112 cards for NORMAL, 168 cards for NO_MERCY
     const newDeck = UnoDeckService.generateDeck(deckType);
 
@@ -223,6 +255,9 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
           hand: newDeck.splice(0, 7),
           cardCount: 7,
           isHost: p.isHost,
+          status: 'ACTIVE' as PlayerStatus,
+          finishRank: undefined,
+          isEliminated: false,
         };
       });
     } else {
@@ -237,6 +272,9 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
           hand: newDeck.splice(0, 7),
           cardCount: 7,
           isHost: true,
+          status: 'ACTIVE' as PlayerStatus,
+          finishRank: undefined,
+          isEliminated: false,
         },
       ];
       if (isPassAndPlay) {
@@ -341,7 +379,7 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
         }
 
         case 'PRIVATE_HAND_UPDATE': {
-          // Part 28: Securely receive private hand update
+          // Securely receive private hand update
           if (event.playerId === localUser?.id) {
             setAllPlayers(prev => {
               const next = prev.map((p, idx) =>
@@ -349,6 +387,13 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
               );
               allPlayersRef.current = next;
               return next;
+            });
+            // Update localNewHand in active shuffle animation config if running
+            setShuffleAnimationConfig(prev => {
+              if (prev && prev.visible) {
+                return { ...prev, localNewHand: event.hand };
+              }
+              return prev;
             });
           }
           break;
@@ -363,17 +408,53 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
         }
 
         case 'SHUFFLE_AND_REDEAL_HANDS': {
-          if (event.playerCardCounts) {
-            setAllPlayers(prev => {
-              const next = prev.map(p => ({
+          const cardPlayer = allPlayersRef.current.find(p => p.id === event.cardPlayerId);
+          const cardPlayerName = cardPlayer?.name || 'Opponent';
+
+          // Build participant data with accurate screen positions
+          const participants: ShuffleParticipant[] = allPlayersRef.current
+            .filter(p => !p.isEliminated)
+            .map(p => ({
+              id: p.id,
+              name: p.name,
+              avatar: p.avatar,
+              isLocal: p.id === localUser?.id || p.id === allPlayersRef.current[0]?.id,
+              initialCardCount: (event.initialCardCounts && event.initialCardCounts[p.id]) || p.cardCount,
+              finalCardCount: event.playerCardCounts[p.id] !== undefined ? event.playerCardCounts[p.id] : p.cardCount,
+              screenPos: getPlayerScreenCoord(p.id),
+            }));
+
+          const localParticipant = participants.find(p => p.isLocal);
+          const localHand = allPlayersRef.current.find(p => p.id === localParticipant?.id)?.hand || [];
+
+          setActionLock('SHUFFLING_HANDS');
+
+          pendingShuffleResultRef.current = {
+            result: {
+              updatedPlayers: allPlayersRef.current.map(p => ({
                 ...p,
                 cardCount: event.playerCardCounts[p.id] !== undefined ? event.playerCardCounts[p.id] : p.cardCount,
-              }));
-              allPlayersRef.current = next;
-              return next;
-            });
-          }
-          showToast('SHUFFLE HANDS', 'Hands gathered, shuffled and redealt sequentially!', 'success');
+              })),
+              cardCounts: event.playerCardCounts,
+              initialCardCounts: event.initialCardCounts || {},
+              eligiblePlayerIds: participants.map(p => p.id),
+              dealingOrder: event.dealingOrder || [],
+              dealSequence: (event.dealSequence || []).map(id => ({ playerId: id, card: { id: 'card', color: 'WILD', value: '7' } })),
+              totalCards: event.totalCards || 20,
+            },
+            cardPlayerId: event.cardPlayerId || '',
+            pendingCard: null,
+          };
+
+          setShuffleAnimationConfig({
+            visible: true,
+            cardPlayerId: event.cardPlayerId || '',
+            cardPlayerName,
+            participants,
+            dealSequence: event.dealSequence || event.dealingOrder || [],
+            localNewHand: localHand,
+            totalCards: event.totalCards || 20,
+          });
           break;
         }
 
@@ -473,7 +554,27 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
           break;
         }
 
+        case 'PLAYER_FINISHED': {
+          setAllPlayers(prev => {
+            const next = prev.map(p =>
+              p.id === event.playerId ? { ...p, status: 'FINISHED' as PlayerStatus, finishRank: event.rank } : p
+            );
+            allPlayersRef.current = next;
+            return next;
+          });
+          if (event.finishingOrder) {
+            setFinishingOrder(event.finishingOrder);
+            finishingOrderRef.current = event.finishingOrder;
+          }
+          const finisher = allPlayersRef.current.find(p => p.id === event.playerId);
+          showToast('FINISHED!', `${finisher?.name || 'Player'} finished in position #${event.rank}!`, 'success');
+          break;
+        }
+
         case 'PLAYER_WON': {
+          if (event.finalResults) {
+            setFinalResults(event.finalResults);
+          }
           setWinner({ name: event.winnerName, avatar: '👑', isHuman: event.winnerId === localUser?.id });
           setActionLock('GAME_OVER');
           break;
@@ -614,6 +715,35 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
     };
   }, []);
 
+  // Screen coordinate helper for cinematic card animations (flight, shuffle, redistribution)
+  const getPlayerScreenCoord = useCallback(
+    (playerId: string): { x: number; y: number } => {
+      const localUser = session.getLocalPlayer();
+      const isPassAndPlay = activeRoom?.mode === 'PASS_AND_PLAY';
+      const curIdx = currentPlayerIndexRef.current;
+
+      const isBottomPlayer = isPassAndPlay
+        ? allPlayersRef.current[curIdx]?.id === playerId
+        : (playerId === localUser?.id || playerId === allPlayersRef.current[0]?.id);
+
+      if (isBottomPlayer) {
+        return { x: 960, y: 920 };
+      }
+
+      const opponentList = isPassAndPlay
+        ? allPlayersRef.current.filter((_, idx) => idx !== curIdx)
+        : allPlayersRef.current.slice(1);
+
+      const opIdx = opponentList.findIndex(p => p.id === playerId);
+      if (opIdx !== -1) {
+        return getOpponentLayout(opIdx, opponentList.length).centerCoord;
+      }
+
+      return { x: 960, y: 460 };
+    },
+    [session, activeRoom, getOpponentLayout]
+  );
+
   // Bot Turn Loop (ONLY FOR BOT PLAYERS - Production Hardened Guard)
   const runBotTurn = useCallback(
     (botIndex: number, currentActiveColor: UnoColor) => {
@@ -638,8 +768,8 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
       // Natural thinking delay between 1100-1400ms
       botTimerRef.current = setTimeout(() => {
         botTimerRef.current = null;
-        // CANCEL STALE BOT TIMERS GUARD (Part 24 & 25)
-        if (actionLock === 'GAME_OVER') return;
+        // CANCEL STALE BOT TIMERS GUARD (Part 24 & 25, Section 22: Bot Mode - must wait until complete action finishes)
+        if (actionLock === 'GAME_OVER' || actionLock === 'SHUFFLING_HANDS' || actionLock !== 'IDLE') return;
         if (currentPlayerIndexRef.current !== botIndex) return; // Stale timer!
         const currentActive = allPlayersRef.current[currentPlayerIndexRef.current];
         if (!currentActive || currentActive.controller !== 'BOT' || currentActive.id !== expectedBotId) {
@@ -733,10 +863,8 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
               setAllPlayers(prev => {
                 const next = prev.map((p, idx) => {
                   if (idx === botIndex) {
-                    const newCount = p.cardCount - 1;
-                    if (newCount === 0) {
-                      botWon = true;
-                    } else if (newCount === 1) {
+                    const newCount = Math.max(0, p.cardCount - 1);
+                    if (newCount === 1) {
                       showToast('UNO!', `${p.name} called UNO!`, 'warning');
                     }
                     return { ...p, cardCount: newCount };
@@ -747,8 +875,31 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
                 return next;
               });
 
-              if (botWon) {
-                setWinner({ name: bot.name, avatar: bot.avatar, isHuman: false });
+              // Evaluate bot completion via authoritative engine
+              const evalResult = UnoGameEngine.evaluatePlayerCompletion(
+                allPlayersRef.current,
+                rules,
+                finishingOrderRef.current,
+                eliminatedOrderRef.current
+              );
+
+              finishingOrderRef.current = evalResult.finishingOrder;
+              eliminatedOrderRef.current = evalResult.eliminatedOrder;
+              setFinishingOrder(evalResult.finishingOrder);
+              setEliminatedOrder(evalResult.eliminatedOrder);
+
+              allPlayersRef.current = evalResult.updatedPlayers;
+              setAllPlayers(evalResult.updatedPlayers);
+
+              if (evalResult.justFinishedPlayerId) {
+                const finisher = evalResult.updatedPlayers.find(p => p.id === evalResult.justFinishedPlayerId);
+                showToast('FINISHED!', `${finisher?.name || 'Bot'} finished in position #${finisher?.finishRank || 1}!`, 'success');
+              }
+
+              if (evalResult.isMatchOver) {
+                setFinalResults(evalResult.finalResults);
+                const w = evalResult.winner || bot;
+                setWinner({ name: w.name, avatar: w.avatar, isHuman: false });
                 setActionLock('GAME_OVER');
                 return validDeck;
               }
@@ -856,10 +1007,13 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
         stepMultiplier = 1 + extraSkipCount;
       }
 
-      const totalPlayers = allPlayersRef.current.length || 1;
-      const step = currentDir === 'CW' ? 1 : -1;
       const curIdx = currentPlayerIndexRef.current;
-      const nextIndex = (curIdx + step * stepMultiplier + totalPlayers * 10) % totalPlayers;
+      const nextIndex = UnoGameEngine.getNextActivePlayerIndex(
+        allPlayersRef.current,
+        curIdx,
+        currentDir,
+        stepMultiplier
+      );
 
       setCurrentPlayerIndex(nextIndex);
       currentPlayerIndexRef.current = nextIndex;
@@ -939,6 +1093,35 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
       pendingDrawStackRef.current = 0;
       showToast('DRAW PENALTY', `You drew ${drawnCards.length} cards from the stack!`, 'penalty');
       session.acceptDrawStack();
+
+      // Check Mercy Rule (25+ cards in No Mercy)
+      const evalResult = UnoGameEngine.evaluatePlayerCompletion(
+        allPlayersRef.current,
+        rules,
+        finishingOrderRef.current,
+        eliminatedOrderRef.current
+      );
+
+      finishingOrderRef.current = evalResult.finishingOrder;
+      eliminatedOrderRef.current = evalResult.eliminatedOrder;
+      setFinishingOrder(evalResult.finishingOrder);
+      setEliminatedOrder(evalResult.eliminatedOrder);
+
+      allPlayersRef.current = evalResult.updatedPlayers;
+      setAllPlayers(evalResult.updatedPlayers);
+
+      if (evalResult.justEliminatedPlayerId) {
+        const elim = evalResult.updatedPlayers.find(p => p.id === evalResult.justEliminatedPlayerId);
+        showToast('ELIMINATED!', `${elim?.name || 'Player'} reached 25+ cards and was eliminated!`, 'penalty');
+      }
+
+      if (evalResult.isMatchOver) {
+        setFinalResults(evalResult.finalResults);
+        const w = evalResult.winner;
+        setWinner(w ? { name: w.name, avatar: w.avatar, isHuman: w.isHuman } : null);
+        setActionLock('GAME_OVER');
+        return;
+      }
 
       // Penalty drawer loses turn
       advanceTurn(undefined, activeColor);
@@ -1047,11 +1230,10 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
       }
 
       if (card.value === 'SHUFFLE_HANDS') {
-        // Dedicated Shuffle Hands
+        // Dedicated Shuffle Hands (Section 18: Authoritative + Cinematic Animation)
         setSelectedCardId(card.id);
         setPendingWildCard(card);
-        executeShuffleHandsLogic();
-        setActionLock('CHOOSING_WILD_COLOR');
+        executeShuffleHandsLogic(card);
         return;
       }
 
@@ -1116,24 +1298,41 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
         const curIdx = currentPlayerIndexRef.current;
         const curPlayer = allPlayersRef.current[curIdx];
 
-        let isVictory = false;
-        setAllPlayers(prev => {
-          const next = prev.map((p, idx) => {
-            if (idx === curIdx) {
-              const nextHand = p.hand.filter(c => c.id !== card.id);
-              if (nextHand.length === 0) {
-                isVictory = true;
-              }
-              return { ...p, hand: nextHand, cardCount: nextHand.length };
-            }
-            return p;
-          });
-          allPlayersRef.current = next;
-          return next;
+        const nextPlayers = allPlayersRef.current.map((p, idx) => {
+          if (idx === curIdx) {
+            const nextHand = p.hand.filter(c => c.id !== card.id);
+            return { ...p, hand: nextHand, cardCount: nextHand.length };
+          }
+          return p;
         });
+        allPlayersRef.current = nextPlayers;
+        setAllPlayers(nextPlayers);
 
-        if (isVictory && curPlayer) {
-          setWinner({ name: curPlayer.name, avatar: curPlayer.avatar, isHuman: curPlayer.isHuman });
+        // Authoritative completion evaluation
+        const evalResult = UnoGameEngine.evaluatePlayerCompletion(
+          allPlayersRef.current,
+          rules,
+          finishingOrderRef.current,
+          eliminatedOrderRef.current
+        );
+
+        finishingOrderRef.current = evalResult.finishingOrder;
+        eliminatedOrderRef.current = evalResult.eliminatedOrder;
+        setFinishingOrder(evalResult.finishingOrder);
+        setEliminatedOrder(evalResult.eliminatedOrder);
+
+        allPlayersRef.current = evalResult.updatedPlayers;
+        setAllPlayers(evalResult.updatedPlayers);
+
+        if (evalResult.justFinishedPlayerId) {
+          const finisher = evalResult.updatedPlayers.find(p => p.id === evalResult.justFinishedPlayerId);
+          showToast('FINISHED!', `${finisher?.name || 'Player'} finished in position #${finisher?.finishRank || 1}!`, 'success');
+        }
+
+        if (evalResult.isMatchOver) {
+          setFinalResults(evalResult.finalResults);
+          const w = evalResult.winner || curPlayer;
+          setWinner(w ? { name: w.name, avatar: w.avatar, isHuman: w.isHuman } : null);
           setActionLock('GAME_OVER');
           return;
         }
@@ -1173,18 +1372,131 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
     [hasCalledUno, showToast, advanceTurn, session]
   );
 
-  // Dedicated Shuffle Hands Logic (Part 2)
-  const executeShuffleHandsLogic = useCallback(() => {
-    const curIdx = currentPlayerIndexRef.current;
-    const { updatedPlayers } = UnoGameEngine.executeShuffleAndRedealHands(
-      allPlayersRef.current,
-      curIdx,
-      playDirectionRef.current
-    );
-    setAllPlayers(updatedPlayers);
-    allPlayersRef.current = updatedPlayers;
-    showToast('SHUFFLE HANDS', 'All cards gathered, shuffled and redealt sequentially!', 'success');
-  }, [showToast]);
+  // Dedicated Shuffle Hands Logic (Used identically by Dedicated Shuffle Hands & Custom Wild)
+  const executeShuffleHandsLogic = useCallback(
+    (card?: UnoCard | null, explicitCardPlayerId?: string) => {
+      const curIdx = currentPlayerIndexRef.current;
+      const curPlayer = allPlayersRef.current[curIdx];
+      const cardPlayerId = explicitCardPlayerId || curPlayer?.id || 'player_1';
+      const cardPlayerName = allPlayersRef.current.find(p => p.id === cardPlayerId)?.name || 'Player';
+
+      // If card was played from hand, remove it from hand and place on discard pile
+      if (card) {
+        setDiscardPile(prev => [...prev, card]);
+        allPlayersRef.current = allPlayersRef.current.map((p, idx) => {
+          if (idx === curIdx) {
+            const nextHand = p.hand.filter(c => c.id !== card.id);
+            return { ...p, hand: nextHand, cardCount: nextHand.length };
+          }
+          return p;
+        });
+      }
+
+      // 1. Authoritative Engine execution: executeShuffleHands
+      const result = UnoGameEngine.executeShuffleHands(
+        allPlayersRef.current,
+        curIdx,
+        playDirectionRef.current
+      );
+
+      // 2. Build participants with accurate screen positions
+      const isPassAndPlay = activeRoom?.mode === 'PASS_AND_PLAY';
+      const localUser = session.getLocalPlayer();
+      const participants: ShuffleParticipant[] = result.updatedPlayers
+        .filter(p => !p.isEliminated)
+        .map(p => {
+          const isLocal = isPassAndPlay
+            ? p.id === curPlayer?.id
+            : (p.id === localUser?.id || p.id === allPlayersRef.current[0]?.id);
+          return {
+            id: p.id,
+            name: p.name,
+            avatar: p.avatar,
+            isLocal,
+            initialCardCount: result.initialCardCounts[p.id] || p.hand.length,
+            finalCardCount: result.cardCounts[p.id] || 0,
+            screenPos: getPlayerScreenCoord(p.id),
+          };
+        });
+
+      const localParticipant = participants.find(p => p.isLocal);
+      const localNewHand = result.updatedPlayers.find(p => p.id === localParticipant?.id)?.hand || [];
+
+      // 3. Set Action Lock to SHUFFLING_HANDS (blocks all user inputs & bot timers)
+      setActionLock('SHUFFLING_HANDS');
+
+      // 4. Store pending result to commit once animation finishes
+      pendingShuffleResultRef.current = {
+        result,
+        cardPlayerId,
+        pendingCard: card || pendingWildCard,
+      };
+
+      // 5. Activate visual cinematic animation
+      setShuffleAnimationConfig({
+        visible: true,
+        cardPlayerId,
+        cardPlayerName,
+        participants,
+        dealSequence: result.dealSequence.map(s => s.playerId),
+        localNewHand,
+        totalCards: result.totalCards,
+        pendingCard: card || pendingWildCard,
+      });
+    },
+    [session, activeRoom, getPlayerScreenCoord, pendingWildCard]
+  );
+
+  // Callback when ShuffleHandsAnimation completes
+  const handleShuffleAnimationComplete = useCallback(() => {
+    const pending = pendingShuffleResultRef.current;
+    if (pending) {
+      const { result, cardPlayerId, pendingCard } = pending;
+      pendingShuffleResultRef.current = null;
+
+      // Commit authoritative state to React state
+      setAllPlayers(result.updatedPlayers);
+      allPlayersRef.current = result.updatedPlayers;
+
+      // Close animation
+      setShuffleAnimationConfig(null);
+
+      showToast('SHUFFLE HANDS', 'All cards gathered, shuffled and redealt sequentially!', 'success');
+
+      // Card player now chooses wild color
+      const localUser = session.getLocalPlayer();
+      const isPassAndPlay = activeRoom?.mode === 'PASS_AND_PLAY';
+      const curIdx = currentPlayerIndexRef.current;
+      const curPlayer = allPlayersRef.current[curIdx];
+
+      const isCardPlayerLocal = isPassAndPlay
+        ? curPlayer?.controller === 'LOCAL_HUMAN' && curPlayer?.id === cardPlayerId
+        : cardPlayerId === localUser?.id || cardPlayerId === allPlayersRef.current[0]?.id;
+
+      const isCardPlayerBot = curPlayer?.controller === 'BOT' && curPlayer?.id === cardPlayerId;
+
+      if (isCardPlayerLocal) {
+        setPendingWildCard(pendingCard || { id: `wild_shuffle_${Date.now()}`, color: 'WILD', value: 'SHUFFLE_HANDS' });
+        setCanChooseWild(true);
+        setWildChooserName(curPlayer?.name || 'You');
+        setActionLock('CHOOSING_WILD_COLOR');
+      } else if (isCardPlayerBot) {
+        // Bot chooses color
+        const botColors: UnoColor[] = ['RED', 'YELLOW', 'GREEN', 'BLUE'];
+        const chosenColor = botColors[Math.floor(Math.random() * botColors.length)];
+        setActiveColor(chosenColor);
+        activeColorRef.current = chosenColor;
+        setActionLock('IDLE');
+        advanceTurn(pendingCard || undefined, chosenColor);
+      } else {
+        // Remote player is choosing color
+        setActionLock('WAITING_FOR_REMOTE_PLAYER');
+      }
+    } else {
+      setShuffleAnimationConfig(null);
+      setActionLock('IDLE');
+    }
+  }, [session, activeRoom, showToast, advanceTurn]);
 
   // Pass Hands in Direction Logic (Part 3 - 0 Card)
   const executePassHandsLogic = useCallback((card: UnoCard) => {
@@ -1226,10 +1538,25 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
       if (!pendingWildCard) return;
       const card = pendingWildCard;
       setPendingWildCard(null);
-      commitPlay(card, color);
-      session.chooseWildColor(color);
+
+      if (card.value === 'SHUFFLE_HANDS' || card.value === 'CUSTOM_WILD') {
+        setActiveColor(color);
+        activeColorRef.current = color;
+        setActionLock('IDLE');
+        setAnnouncement({
+          text: 'Wild Color chosen: ',
+          highlight: color,
+          color: COLOR_MAP[color] || COLORS.unoYellow,
+        });
+        NativeEffectsService.triggerCardPlay();
+        advanceTurn(card, color);
+        session.chooseWildColor(color);
+      } else {
+        commitPlay(card, color);
+        session.chooseWildColor(color);
+      }
     },
-    [pendingWildCard, commitPlay, session]
+    [pendingWildCard, commitPlay, session, advanceTurn]
   );
 
   // Custom Wild Power Selection Callback (Part 2)
@@ -1239,24 +1566,25 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
       session.chooseCustomWildPower(power);
 
       if (power === 'SHUFFLE_HANDS') {
-        executeShuffleHandsLogic();
+        // Section 14: Trigger the exact same Shuffle Hands animation
+        executeShuffleHandsLogic(pendingWildCard);
       } else if (power === 'EVERYONE_PLUS_FOUR') {
-        // Every other player gets +4
+        // Section 16: Everyone +4 preserves draw stack and gives penalty cards; does NOT trigger shuffle
         const curIdx = currentPlayerIndexRef.current;
         setAllPlayers(prev => {
           const next = prev.map((p, idx) =>
-            idx !== curIdx ? { ...p, cardCount: p.cardCount + 4 } : p
+            idx !== curIdx && !p.isEliminated && p.status !== 'FINISHED' && p.status !== 'ELIMINATED'
+              ? { ...p, cardCount: p.cardCount + 4 }
+              : p
           );
           allPlayersRef.current = next;
           return next;
         });
         showToast('EVERYONE +4', 'Every other player received +4 penalty cards!', 'penalty');
+        setActionLock('CHOOSING_WILD_COLOR');
       }
-
-      // Card player now chooses wild color
-      setActionLock('CHOOSING_WILD_COLOR');
     },
-    [executeShuffleHandsLogic, session, showToast]
+    [executeShuffleHandsLogic, session, showToast, pendingWildCard]
   );
 
   // 7 Swap Player Selection Callback (Part 3)
@@ -1533,10 +1861,26 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
         onSelectColor={handleRouletteColorSelected}
       />
 
+      {/* Shuffle Hands Cinematic Animation (Section 4-11, 18, 24-25) */}
+      {shuffleAnimationConfig && (
+        <ShuffleHandsAnimation
+          visible={shuffleAnimationConfig.visible}
+          cardPlayerId={shuffleAnimationConfig.cardPlayerId}
+          cardPlayerName={shuffleAnimationConfig.cardPlayerName}
+          participants={shuffleAnimationConfig.participants}
+          dealSequence={shuffleAnimationConfig.dealSequence}
+          localNewHand={shuffleAnimationConfig.localNewHand}
+          totalCards={shuffleAnimationConfig.totalCards}
+          onComplete={handleShuffleAnimationComplete}
+        />
+      )}
+
       {/* Game Over Modal */}
       <NativeGameOverModal
         visible={actionLock === 'GAME_OVER'}
+        gameEndMode={rules.gameEndMode || 'FIRST_PLAYER_WINS'}
         winner={winner}
+        finalResults={finalResults}
         onPlayAgain={initializeGame}
         onExit={onQuit}
       />

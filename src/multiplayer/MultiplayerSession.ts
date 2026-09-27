@@ -37,6 +37,8 @@ export class MultiplayerSession {
   private authoritativePhase: GamePhase = 'NOT_STARTED';
   private authoritativeChoiceOwnerId: string | null = null;
   private authoritativeRevision: number = 1;
+  private authoritativeFinishingOrder: string[] = [];
+  private authoritativeEliminatedOrder: string[] = [];
 
   // Deduplication & Stale Command Protection (Parts 20 & 35)
   private seenCommandIds: Set<string> = new Set();
@@ -375,10 +377,16 @@ export class MultiplayerSession {
 
     const hands = new Map<string, UnoCard[]>();
 
+    this.authoritativeFinishingOrder = [];
+    this.authoritativeEliminatedOrder = [];
+
     this.room.players.forEach(p => {
       const playerHand = fullDeck.splice(0, 7);
       hands.set(p.id, playerHand);
       p.cardCount = 7;
+      p.status = 'ACTIVE';
+      p.finishRank = undefined;
+      p.isEliminated = false;
     });
 
     // Top non-wild card to initiate discard pile
@@ -745,6 +753,12 @@ export class MultiplayerSession {
       }
 
       case 'CHOOSE_CUSTOM_WILD_POWER': {
+        // Section 15 Security Guard: Only the player who played the Custom Wild may choose its power
+        if (this.authoritativeChoiceOwnerId && command.playerId !== this.authoritativeChoiceOwnerId) {
+          devWarn('MultiplayerSession', 'Unauthorized custom wild power choice rejected:', command.playerId);
+          break;
+        }
+
         this.authoritativePhase = 'PLAYING';
         this.authoritativeChoiceOwnerId = null;
 
@@ -876,14 +890,58 @@ export class MultiplayerSession {
     const players = this.room!.players;
     const isNoMercy = this.room!.rules.deckType === 'NO_MERCY';
 
-    // 1. Check Win
-    const hand = this.authoritativeHands.get(playerId) || [];
-    if (hand.length === 0) {
-      const winner = players.find(p => p.id === playerId);
+    // 1. Evaluate Completion & Game End via Authoritative Engine
+    const playerList: Player[] = players.map(p => ({
+      id: p.id,
+      name: p.name,
+      avatar: p.avatar,
+      isHuman: true,
+      hand: this.authoritativeHands.get(p.id) || [],
+      cardCount: p.cardCount,
+      isEliminated: p.isEliminated,
+      status: p.status,
+      finishRank: p.finishRank,
+    }));
+
+    const completionEval = UnoGameEngine.evaluatePlayerCompletion(
+      playerList,
+      this.room!.rules,
+      this.authoritativeFinishingOrder,
+      this.authoritativeEliminatedOrder
+    );
+
+    this.authoritativeFinishingOrder = completionEval.finishingOrder;
+    this.authoritativeEliminatedOrder = completionEval.eliminatedOrder;
+
+    completionEval.updatedPlayers.forEach(up => {
+      const rp = players.find(p => p.id === up.id);
+      if (rp) {
+        rp.status = up.status;
+        rp.finishRank = up.finishRank;
+        rp.isEliminated = up.isEliminated;
+      }
+    });
+
+    if (completionEval.justFinishedPlayerId) {
+      const finisher = players.find(p => p.id === completionEval.justFinishedPlayerId);
+      const rank = finisher?.finishRank || this.authoritativeFinishingOrder.length;
+      await this.transport?.broadcastEvent({
+        type: 'PLAYER_FINISHED',
+        playerId: completionEval.justFinishedPlayerId,
+        rank,
+        finishingOrder: this.authoritativeFinishingOrder,
+        revision: this.authoritativeRevision,
+      });
+    }
+
+    if (completionEval.isMatchOver) {
+      const winner = completionEval.winner || players[0];
       await this.transport?.broadcastEvent({
         type: 'PLAYER_WON',
-        winnerId: playerId,
+        winnerId: winner?.id || '',
         winnerName: winner?.name || 'Player',
+        finishingOrder: this.authoritativeFinishingOrder,
+        finalResults: completionEval.finalResults,
         revision: this.authoritativeRevision,
       });
       return;
@@ -1060,14 +1118,14 @@ export class MultiplayerSession {
     }));
 
     const cardPlayerIndex = players.findIndex(p => p.id === cardPlayerId);
-    const { updatedPlayers, cardCounts } = UnoGameEngine.executeShuffleAndRedealHands(
+    const result = UnoGameEngine.executeShuffleHands(
       playerList,
       cardPlayerIndex,
       this.authoritativeDirection
     );
 
     // Save redistributed hands
-    updatedPlayers.forEach(p => {
+    result.updatedPlayers.forEach(p => {
       this.authoritativeHands.set(p.id, p.hand);
       const roomP = players.find(rp => rp.id === p.id);
       if (roomP) roomP.cardCount = p.hand.length;
@@ -1075,12 +1133,17 @@ export class MultiplayerSession {
 
     await this.transport?.broadcastEvent({
       type: 'SHUFFLE_AND_REDEAL_HANDS',
-      playerCardCounts: cardCounts,
+      cardPlayerId,
+      playerCardCounts: result.cardCounts,
+      initialCardCounts: result.initialCardCounts,
+      dealingOrder: result.dealingOrder,
+      dealSequence: result.dealSequence.map(s => s.playerId),
+      totalCards: result.totalCards,
       revision: this.authoritativeRevision,
     });
 
     // Send private hands
-    for (const p of updatedPlayers) {
+    for (const p of result.updatedPlayers) {
       await this.transport?.broadcastEvent({
         type: 'PRIVATE_HAND_UPDATE',
         playerId: p.id,
@@ -1095,7 +1158,7 @@ export class MultiplayerSession {
     this.authoritativePendingDraw += 4;
 
     for (const p of players) {
-      if (p.id !== cardPlayerId && !p.isEliminated) {
+      if (p.id !== cardPlayerId && !p.isEliminated && p.status !== 'FINISHED' && p.status !== 'ELIMINATED') {
         const { drawPile, discardPile } = UnoGameEngine.ensureDrawCards(
           this.authoritativeDeck,
           this.authoritativeDiscard,
@@ -1206,9 +1269,25 @@ export class MultiplayerSession {
 
   private advanceAuthoritativeTurn(extraSkips: number = 0) {
     const players = this.room!.players;
-    const step = this.authoritativeDirection === 'CW' ? 1 : -1;
     const stepMultiplier = 1 + extraSkips;
-    this.authoritativeCurrentIndex = (this.authoritativeCurrentIndex + step * stepMultiplier + players.length * 10) % players.length;
+
+    const playerList: Player[] = players.map(p => ({
+      id: p.id,
+      name: p.name,
+      avatar: p.avatar,
+      isHuman: true,
+      hand: this.authoritativeHands.get(p.id) || [],
+      cardCount: p.cardCount,
+      isEliminated: p.isEliminated,
+      status: p.status,
+    }));
+
+    this.authoritativeCurrentIndex = UnoGameEngine.getNextActivePlayerIndex(
+      playerList,
+      this.authoritativeCurrentIndex,
+      this.authoritativeDirection,
+      stepMultiplier
+    );
     this.broadcastTurnChange();
   }
 
@@ -1246,6 +1325,16 @@ export class MultiplayerSession {
             this.localPlayer.isHost = true;
           }
           this.notifyListeners({ type: 'HOST_CHANGED', newHostId: this.room.hostId });
+        }
+        this.notifyState();
+        break;
+      }
+
+      case 'PLAYER_FINISHED': {
+        const p = this.room.players.find(pl => pl.id === event.playerId);
+        if (p) {
+          p.status = 'FINISHED';
+          p.finishRank = event.rank;
         }
         this.notifyState();
         break;

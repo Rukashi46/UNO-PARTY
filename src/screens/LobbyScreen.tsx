@@ -86,6 +86,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
       includeCustomWilds: true,
       soundEnabled: true,
       hapticsEnabled: true,
+      gameEndMode: 'FIRST_PLAYER_WINS',
     };
 
     if (mode === 'PLAY_BOTS' || mode === 'PASS_AND_PLAY') {
@@ -526,7 +527,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                 {activeDeckType === 'NORMAL' ? 'Modern Party Rules' : 'No Mercy Extreme Rules'}
               </Text>
               <Text style={styles.rulesHighlights}>
-                Deck: {activeDeckType} • Stacking {room?.rules.stacking ? 'ON' : 'OFF'} • 7-0 {room?.rules.sevenZeroRule ? 'ON' : 'OFF'}
+                Deck: {activeDeckType} • Stacking {room?.rules.stacking ? 'ON' : 'OFF'} • End: {room?.rules.gameEndMode === 'PLAY_UNTIL_LAST_PLAYER' ? 'Play to Last' : 'First Wins'}
               </Text>
             </View>
           </View>

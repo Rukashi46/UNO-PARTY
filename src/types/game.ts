@@ -31,6 +31,10 @@ export type PlayerControl = 'HUMAN' | 'BOT';
 
 export type PlayerController = 'LOCAL_HUMAN' | 'BOT' | 'REMOTE_HUMAN';
 
+export type GameEndMode = 'FIRST_PLAYER_WINS' | 'PLAY_UNTIL_LAST_PLAYER';
+
+export type PlayerStatus = 'ACTIVE' | 'FINISHED' | 'ELIMINATED';
+
 export interface Player {
   id: string;
   name: string;
@@ -45,6 +49,8 @@ export interface Player {
   hasTurn?: boolean;
   score?: number;
   isEliminated?: boolean;
+  status?: PlayerStatus;
+  finishRank?: number;
 }
 
 export type GameMode = 'ONLINE' | 'WLAN' | 'PLAY_BOTS' | 'PASS_AND_PLAY';
@@ -60,6 +66,7 @@ export interface GameRules {
   includeCustomWilds: boolean;
   soundEnabled: boolean;
   hapticsEnabled: boolean;
+  gameEndMode?: GameEndMode;
 }
 
 export type GamePhase =
@@ -101,4 +108,5 @@ export interface GameState {
   timerSeconds: number;
   revision?: number;
   choiceOwnerId?: string;
+  finishingOrder?: string[];
 }

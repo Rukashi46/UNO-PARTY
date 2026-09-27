@@ -11,10 +11,14 @@ interface OpponentNodeProps {
 
 export const NativeOpponentNode: React.FC<OpponentNodeProps> = ({
   player,
-  isTurn = false,
+  isTurn: rawIsTurn = false,
   scale = 1.0,
 }) => {
-  const cardCount = Math.min(player.cardCount, 8);
+  const isFinished = player.status === 'FINISHED' || (player.hand && player.hand.length === 0 && player.cardCount === 0 && player.status !== 'ACTIVE' && player.finishRank !== undefined);
+  const isEliminated = player.status === 'ELIMINATED' || player.isEliminated;
+  const isTurn = !isFinished && !isEliminated && rawIsTurn;
+
+  const cardCount = isFinished || isEliminated ? 0 : Math.min(player.cardCount, 8);
   const cardAngles = [-15, -10, -5, 0, 5, 10, 15, 20];
 
   return (
@@ -40,20 +44,41 @@ export const NativeOpponentNode: React.FC<OpponentNodeProps> = ({
       </View>
 
       {/* Player Pill Badge */}
-      <View style={[styles.badge, isTurn && styles.badgeTurn]}>
+      <View
+        style={[
+          styles.badge,
+          isTurn && styles.badgeTurn,
+          isFinished && styles.badgeFinished,
+          isEliminated && styles.badgeEliminated,
+        ]}
+      >
         {player.isHost && (
           <View style={styles.hostCrown}>
             <Text style={styles.crownText}>👑</Text>
           </View>
         )}
 
-        <View style={[styles.avatarCircle, isTurn && styles.avatarCircleTurn]}>
+        <View
+          style={[
+            styles.avatarCircle,
+            isTurn && styles.avatarCircleTurn,
+            isFinished && styles.avatarCircleFinished,
+            isEliminated && styles.avatarCircleEliminated,
+          ]}
+        >
           <Text style={styles.avatarText}>{player.avatar}</Text>
         </View>
 
         <View style={styles.textColumn}>
           <View style={styles.nameRow}>
-            <Text style={styles.nameText} numberOfLines={1}>
+            <Text
+              style={[
+                styles.nameText,
+                isFinished && styles.nameTextFinished,
+                isEliminated && styles.nameTextEliminated,
+              ]}
+              numberOfLines={1}
+            >
               {player.name}
             </Text>
             {isTurn && (
@@ -61,9 +86,29 @@ export const NativeOpponentNode: React.FC<OpponentNodeProps> = ({
                 <Text style={styles.turnTagText}>TURN</Text>
               </View>
             )}
+            {isFinished && (
+              <View style={styles.finishedTag}>
+                <Text style={styles.finishedTagText}>
+                  {player.finishRank ? `#${player.finishRank}` : 'FIN'}
+                </Text>
+              </View>
+            )}
           </View>
-          <Text style={[styles.cardCountText, player.cardCount === 1 && styles.unoCountText]}>
-            {player.cardCount === 1 ? '🔥 UNO! (1)' : `${player.cardCount} cards`}
+          <Text
+            style={[
+              styles.cardCountText,
+              player.cardCount === 1 && !isFinished && !isEliminated && styles.unoCountText,
+              isFinished && styles.finishedCountText,
+              isEliminated && styles.eliminatedCountText,
+            ]}
+          >
+            {isFinished
+              ? `🏁 FINISHED (${player.finishRank ? `#${player.finishRank}` : 'DONE'})`
+              : isEliminated
+              ? '💀 ELIMINATED'
+              : player.cardCount === 1
+              ? '🔥 UNO! (1)'
+              : `${player.cardCount} cards`}
           </Text>
         </View>
       </View>
@@ -192,5 +237,47 @@ const styles = StyleSheet.create({
   unoCountText: {
     color: COLORS.unoRed,
     fontWeight: '900',
+  },
+  badgeFinished: {
+    borderColor: '#22C55E',
+    backgroundColor: 'rgba(15, 23, 42, 0.75)',
+    opacity: 0.8,
+  },
+  badgeEliminated: {
+    borderColor: '#EF4444',
+    backgroundColor: 'rgba(20, 10, 10, 0.75)',
+    opacity: 0.65,
+  },
+  avatarCircleFinished: {
+    borderColor: '#22C55E',
+  },
+  avatarCircleEliminated: {
+    borderColor: '#EF4444',
+  },
+  nameTextFinished: {
+    color: '#94A3B8',
+  },
+  nameTextEliminated: {
+    color: '#EF4444',
+    textDecorationLine: 'line-through',
+  },
+  finishedTag: {
+    backgroundColor: '#22C55E',
+    borderRadius: 4,
+    paddingHorizontal: 5,
+    paddingVertical: 1.5,
+  },
+  finishedTagText: {
+    color: '#000000',
+    fontSize: 9,
+    fontWeight: '900',
+  },
+  finishedCountText: {
+    color: '#4ADE80',
+    fontWeight: '800',
+  },
+  eliminatedCountText: {
+    color: '#F87171',
+    fontWeight: '800',
   },
 });

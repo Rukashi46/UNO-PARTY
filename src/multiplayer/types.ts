@@ -1,5 +1,5 @@
-import { UnoCard, UnoColor, GameRules, GamePhase, CustomWildPower, DeckType, PlayerController } from '../types/game';
-export { GameRules, CustomWildPower, DeckType, PlayerController };
+import { UnoCard, UnoColor, GameRules, GamePhase, CustomWildPower, DeckType, PlayerController, GameEndMode, PlayerStatus } from '../types/game';
+export { GameRules, CustomWildPower, DeckType, PlayerController, GameEndMode, PlayerStatus };
 
 export type MultiplayerMode = 'ONLINE' | 'WLAN' | 'PLAY_BOTS' | 'PASS_AND_PLAY';
 
@@ -15,6 +15,8 @@ export interface RoomPlayer {
   cardCount: number;
   controller?: PlayerController;
   isEliminated?: boolean;
+  status?: PlayerStatus;
+  finishRank?: number;
 }
 
 export interface MultiplayerRoom {
@@ -79,7 +81,16 @@ export type GameEvent =
   | { type: 'CUSTOM_WILD_SELECTED'; playerId: string; power: CustomWildPower; revision: number }
   | { type: 'HANDS_SWAPPED'; player1Id: string; player2Id: string; player1CardCount: number; player2CardCount: number; revision: number }
   | { type: 'HANDS_PASSED'; direction: 'CW' | 'CCW'; playerCardCounts: Record<string, number>; revision: number }
-  | { type: 'SHUFFLE_AND_REDEAL_HANDS'; playerCardCounts: Record<string, number>; revision: number }
+  | {
+      type: 'SHUFFLE_AND_REDEAL_HANDS';
+      cardPlayerId?: string;
+      playerCardCounts: Record<string, number>;
+      initialCardCounts?: Record<string, number>;
+      dealingOrder?: string[];
+      dealSequence?: string[];
+      totalCards?: number;
+      revision: number;
+    }
   | { type: 'ROULETTE_DRAW_COMPLETED'; targetPlayerId: string; chosenColor: UnoColor; drawnCount: number; revision: number }
   | { type: 'DISCARD_ALL_TRIGGERED'; playerId: string; color: UnoColor; count: number; revision: number }
   | { type: 'SKIP_EVERYONE_TRIGGERED'; playerId: string; revision: number }
@@ -96,8 +107,9 @@ export type GameEvent =
       revision: number;
     }
   | { type: 'PLAYER_ELIMINATED'; playerId: string; reason: string; revision: number }
-  | { type: 'PLAYER_WON'; winnerId: string; winnerName: string; revision: number }
-  | { type: 'MATCH_FINISHED' }
+  | { type: 'PLAYER_FINISHED'; playerId: string; rank: number; finishingOrder: string[]; revision: number }
+  | { type: 'PLAYER_WON'; winnerId: string; winnerName: string; finishingOrder?: string[]; finalResults?: any[]; revision: number }
+  | { type: 'MATCH_FINISHED'; finishingOrder?: string[]; finalResults?: any[]; revision?: number }
   | { type: 'SYNC_STATE'; state: PublicMatchState; privateHand?: UnoCard[] };
 
 export interface PublicMatchState {
@@ -115,6 +127,7 @@ export interface PublicMatchState {
   gamePhase: GamePhase;
   choiceOwnerId?: string;
   revision: number;
+  finishingOrder?: string[];
 }
 
 export interface MultiplayerTransport {
