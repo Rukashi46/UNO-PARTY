@@ -6,10 +6,6 @@
     "orientation": "default",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
-    "splash": {
-      "backgroundColor": "#07060A",
-      "resizeMode": "contain"
-    },
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.unoparty.arena"
@@ -33,7 +29,21 @@
         {
           "initialOrientation": "PORTRAIT_UP"
         }
+      ],
+      "expo-font",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#07060A",
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 200
+        }
       ]
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "72c37940-82f4-4988-b871-16954edf1455"
+      }
+    }
   }
 }

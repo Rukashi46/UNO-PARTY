@@ -3,6 +3,7 @@ import { StatusBar } from 'expo-status-bar';
 import { StyleSheet, View, BackHandler, LogBox } from 'react-native';
 
 LogBox.ignoreAllLogs(true);
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { SplashScreen } from './src/screens/SplashScreen';
 import { HomeScreen } from './src/screens/HomeScreen';
@@ -66,73 +67,78 @@ export default function App() {
   }, [currentScreen]);
 
   return (
-    <SafeAreaProvider>
-      <StatusBar style="light" hidden={currentScreen === 'GAMEPLAY'} />
-      <View style={styles.container}>
-        <ProductionErrorBoundary onReset={() => setCurrentScreen('HOME')}>
-          {/* 1. Splash Screen */}
-          {currentScreen === 'SPLASH' && (
-            <SplashScreen onStart={() => setCurrentScreen('HOME')} />
-          )}
+    <GestureHandlerRootView style={styles.root}>
+      <SafeAreaProvider>
+        <StatusBar style="light" hidden={currentScreen === 'GAMEPLAY'} />
+        <View style={styles.container}>
+          <ProductionErrorBoundary onReset={() => setCurrentScreen('HOME')}>
+            {/* 1. Splash Screen */}
+            {currentScreen === 'SPLASH' && (
+              <SplashScreen onStart={() => setCurrentScreen('HOME')} />
+            )}
 
-          {/* 2. Home Screen */}
-          {currentScreen === 'HOME' && (
-            <SafeAreaView style={styles.safeArea}>
-              <HomeScreen
-                onSelectMode={mode => {
-                  setSelectedMode(mode);
-                  setCurrentScreen('LOBBY');
-                }}
-                onOpenSettings={() => setCurrentScreen('SETTINGS')}
-              />
-            </SafeAreaView>
-          )}
+            {/* 2. Home Screen */}
+            {currentScreen === 'HOME' && (
+              <SafeAreaView style={styles.safeArea}>
+                <HomeScreen
+                  onSelectMode={mode => {
+                    setSelectedMode(mode);
+                    setCurrentScreen('LOBBY');
+                  }}
+                  onOpenSettings={() => setCurrentScreen('SETTINGS')}
+                />
+              </SafeAreaView>
+            )}
 
-          {/* 3. Settings Screen (Separate from Match Rules) */}
-          {currentScreen === 'SETTINGS' && (
-            <SafeAreaView style={styles.safeArea}>
-              <SettingsScreen onBack={() => setCurrentScreen('HOME')} />
-            </SafeAreaView>
-          )}
+            {/* 3. Settings Screen (Separate from Match Rules) */}
+            {currentScreen === 'SETTINGS' && (
+              <SafeAreaView style={styles.safeArea}>
+                <SettingsScreen onBack={() => setCurrentScreen('HOME')} />
+              </SafeAreaView>
+            )}
 
-          {/* 4. Lobby Screen (Real Multiplayer) */}
-          {currentScreen === 'LOBBY' && (
-            <SafeAreaView style={styles.safeArea}>
-              <LobbyScreen
-                mode={selectedMode}
-                onStartMatch={() => setCurrentScreen('GAMEPLAY')}
-                onOpenRules={() => setCurrentScreen('RULES')}
-                onBack={() => setCurrentScreen('HOME')}
-              />
-            </SafeAreaView>
-          )}
+            {/* 4. Lobby Screen (Real Multiplayer) */}
+            {currentScreen === 'LOBBY' && (
+              <SafeAreaView style={styles.safeArea}>
+                <LobbyScreen
+                  mode={selectedMode}
+                  onStartMatch={() => setCurrentScreen('GAMEPLAY')}
+                  onOpenRules={() => setCurrentScreen('RULES')}
+                  onBack={() => setCurrentScreen('HOME')}
+                />
+              </SafeAreaView>
+            )}
 
-          {/* 5. Match Rules Screen (Configured from Lobby) */}
-          {currentScreen === 'RULES' && (
-            <SafeAreaView style={styles.safeArea}>
-              <RulesScreen
-                rules={matchRules}
-                isHost={MultiplayerSession.getInstance().isHost()}
-                onUpdateRules={rules => {
-                  setMatchRules(rules);
-                  MultiplayerSession.getInstance().updateRules(rules);
-                }}
-                onBack={() => setCurrentScreen('LOBBY')}
-              />
-            </SafeAreaView>
-          )}
+            {/* 5. Match Rules Screen (Configured from Lobby) */}
+            {currentScreen === 'RULES' && (
+              <SafeAreaView style={styles.safeArea}>
+                <RulesScreen
+                  rules={matchRules}
+                  isHost={MultiplayerSession.getInstance().isHost()}
+                  onUpdateRules={rules => {
+                    setMatchRules(rules);
+                    MultiplayerSession.getInstance().updateRules(rules);
+                  }}
+                  onBack={() => setCurrentScreen('LOBBY')}
+                />
+              </SafeAreaView>
+            )}
 
-          {/* 6. Gameplay Screen */}
-          {currentScreen === 'GAMEPLAY' && (
-            <GameplayScreen onQuit={() => setCurrentScreen('LOBBY')} />
-          )}
-        </ProductionErrorBoundary>
-      </View>
-    </SafeAreaProvider>
+            {/* 6. Gameplay Screen */}
+            {currentScreen === 'GAMEPLAY' && (
+              <GameplayScreen onQuit={() => setCurrentScreen('LOBBY')} />
+            )}
+          </ProductionErrorBoundary>
+        </View>
+      </SafeAreaProvider>
+    </GestureHandlerRootView>
   );
 }
 
 const styles = StyleSheet.create({
+  root: {
+    flex: 1,
+  },
   container: {
     flex: 1,
     backgroundColor: '#040507',
