@@ -615,6 +615,8 @@ export class MultiplayerSession {
   // Authoritative Command Processing (Host Only - Parts 9, 10, 19, 20, 35)
   async handleAuthoritativeCommand(command: GameCommand): Promise<void> {
     if (!this.isHost() || !this.room) return;
+    // In local offline modes, GameplayScreen is the single authoritative game session.
+    if (this.mode === 'PLAY_BOTS' || this.mode === 'PASS_AND_PLAY') return;
 
     // 1. Deduplication Protection (Part 35)
     if (this.seenCommandIds.has(command.commandId)) {

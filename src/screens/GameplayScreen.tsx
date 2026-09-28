@@ -83,6 +83,14 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
   const [hasDrawnThisTurn, setHasDrawnThisTurn] = useState<boolean>(false);
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
 
+  // Authoritative Turn Machine State (turnId, phase, pending tracking)
+  const [turnId, setTurnId] = useState<number>(1);
+  const turnIdRef = useRef<number>(1);
+  const [turnPhase, setTurnPhase] = useState<string>('WAITING_FOR_ACTION');
+  const turnPhaseRef = useRef<string>('WAITING_FOR_ACTION');
+  const pendingChoiceRef = useRef<string | null>(null);
+  const pendingEffectRef = useRef<boolean>(false);
+
   // Stored refs to prevent stale closures across async timeouts and flight animations
   const allPlayersRef = useRef<Player[]>([]);
   const currentPlayerIndexRef = useRef<number>(0);
@@ -90,7 +98,7 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
   const activeColorRef = useRef<UnoColor>('YELLOW');
   const pendingDrawStackRef = useRef<number>(0);
   const botTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const advanceTurnRef = useRef<(playedCard?: UnoCard, newActiveColor?: UnoColor, extraSkipCount?: number) => void>(() => {});
+  const advanceTurnRef = useRef<(options?: { playedCard?: UnoCard; newActiveColor?: UnoColor; stepMultiplier?: number; reason?: string }) => void>(() => {});
 
   // Pass & Play device handoff target
   const [handoffTarget, setHandoffTarget] = useState<Player | null>(null);
@@ -330,6 +338,12 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
     setWinner(null);
     setHandoffTarget(null);
     setActionLock('IDLE');
+    setTurnId(1);
+    turnIdRef.current = 1;
+    setTurnPhase('WAITING_FOR_ACTION');
+    turnPhaseRef.current = 'WAITING_FOR_ACTION';
+    pendingChoiceRef.current = null;
+    pendingEffectRef.current = false;
   }, [activeRoom, deckType, session]);
 
   useEffect(() => {
@@ -535,15 +549,25 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
         }
 
         case 'TURN_CHANGED': {
-          const isMe = event.nextPlayerId === localUser?.id;
-          setCurrentPlayerIndex(isMe ? 0 : 1);
-          currentPlayerIndexRef.current = isMe ? 0 : 1;
+          const targetIndex = allPlayersRef.current.findIndex(p => p.id === event.nextPlayerId);
+          const newIndex = targetIndex !== -1 ? targetIndex : 0;
+          const targetPlayer = allPlayersRef.current[newIndex];
+          const isMe = targetPlayer?.controller === 'LOCAL_HUMAN' || targetPlayer?.id === localUser?.id;
+
+          setCurrentPlayerIndex(newIndex);
+          currentPlayerIndexRef.current = newIndex;
           setActiveColor(event.activeColor);
           activeColorRef.current = event.activeColor;
           setPlayDirection(event.direction);
           playDirectionRef.current = event.direction;
           setPendingDrawStack(event.pendingDrawStack);
           pendingDrawStackRef.current = event.pendingDrawStack;
+
+          const nextTurn = (event.revision || turnIdRef.current) + 1;
+          setTurnId(nextTurn);
+          turnIdRef.current = nextTurn;
+
+          console.log(`[TURN] (Multiplayer Event) turnId=${nextTurn} player=${targetPlayer?.name} controller=${targetPlayer?.controller} direction=${event.direction} drawStack=${event.pendingDrawStack}`);
 
           if (isMe) {
             setActionLock('IDLE');
@@ -620,98 +644,215 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
     []
   );
 
-  // Dynamic opponent layout & scaling based on player count
+  // Dynamic player-count aware opponent layout & scaling for 2 to 10 players
   const getOpponentLayout = useCallback((idx: number, total: number) => {
     if (total <= 1) {
-      // 1v1 duel: Top center, prominent, bold and large!
+      // 2 players (1 opponent): Top center, large prominent duel layout
       return {
-        pos: { top: 82, left: 790 },
+        pos: { top: 80, left: 780 },
         scale: 1.45,
-        centerCoord: { x: 960, y: 140 },
+        centerCoord: { x: 960, y: 150 },
+        compact: false,
+        maxCardBacks: 4,
       };
     }
     if (total === 2) {
-      // 3-player match: Two top balanced nodes
+      // 3 players (2 opponents): Top left & Top right
       const positions = [
-        { top: 88, left: 460 },
-        { top: 88, right: 460 },
+        { top: 85, left: 450 },
+        { top: 85, right: 450 },
       ];
       const coords = [
-        { x: 580, y: 140 },
-        { x: 1340, y: 140 },
+        { x: 580, y: 145 },
+        { x: 1340, y: 145 },
       ];
       return {
         pos: positions[idx] || positions[0],
-        scale: 1.34,
+        scale: 1.30,
         centerCoord: coords[idx] || coords[0],
+        compact: false,
+        maxCardBacks: 4,
       };
     }
     if (total === 3) {
-      // 4-player match: Left, Top-center, Right
+      // 4 players (3 opponents): Left, Top-center, Right
       const positions = [
-        { left: 210, top: 370 },
-        { top: 82, left: 790 },
-        { right: 210, top: 370 },
+        { left: 140, top: 370 },
+        { top: 80, left: 780 },
+        { right: 140, top: 370 },
       ];
       const coords = [
-        { x: 300, y: 440 },
+        { x: 260, y: 440 },
         { x: 960, y: 140 },
-        { x: 1620, y: 440 },
+        { x: 1660, y: 440 },
       ];
       return {
         pos: positions[idx] || positions[0],
         scale: 1.25,
         centerCoord: coords[idx] || coords[0],
+        compact: false,
+        maxCardBacks: 4,
       };
     }
     if (total === 4) {
-      // 5-player match: Top Left, Top Right, Mid Left, Mid Right
+      // 5 players (4 opponents): Left, Top-Left, Top-Right, Right
       const positions = [
-        { top: 88, left: 520 },
-        { top: 88, right: 520 },
-        { left: 210, top: 370 },
-        { right: 210, top: 370 },
+        { left: 140, top: 370 },
+        { top: 85, left: 510 },
+        { top: 85, right: 510 },
+        { right: 140, top: 370 },
       ];
       const coords = [
+        { x: 260, y: 440 },
         { x: 620, y: 140 },
         { x: 1300, y: 140 },
-        { x: 300, y: 440 },
-        { x: 1620, y: 440 },
+        { x: 1660, y: 440 },
       ];
       return {
         pos: positions[idx] || positions[0],
         scale: 1.18,
         centerCoord: coords[idx] || coords[0],
+        compact: false,
+        maxCardBacks: 3,
       };
     }
-    // 5 to 9 opponents (6 to 10 players): Full table coverage
-    const defaultPositions = [
-      { top: 88, left: 480 },
-      { top: 82, left: 800 },
-      { top: 88, right: 480 },
-      { left: 210, top: 230 },
-      { left: 200, top: 380 },
-      { left: 210, bottom: 230 },
-      { right: 210, top: 230 },
-      { right: 200, top: 380 },
-      { right: 210, bottom: 230 },
+    if (total === 5) {
+      // 6 players (5 opponents): 2 Left, 1 Top-center, 2 Right
+      const positions = [
+        { left: 140, top: 400 },
+        { left: 160, top: 220 },
+        { top: 80, left: 780 },
+        { right: 160, top: 220 },
+        { right: 140, top: 400 },
+      ];
+      const coords = [
+        { x: 250, y: 460 },
+        { x: 270, y: 280 },
+        { x: 960, y: 135 },
+        { x: 1650, y: 280 },
+        { x: 1670, y: 460 },
+      ];
+      return {
+        pos: positions[idx] || positions[0],
+        scale: 1.12,
+        centerCoord: coords[idx] || coords[0],
+        compact: false,
+        maxCardBacks: 3,
+      };
+    }
+    if (total === 6) {
+      // 7 players (6 opponents): 2 Left, 2 Top, 2 Right
+      const positions = [
+        { left: 140, top: 470 },
+        { left: 140, top: 240 },
+        { top: 80, left: 540 },
+        { top: 80, right: 540 },
+        { right: 140, top: 240 },
+        { right: 140, top: 470 },
+      ];
+      const coords = [
+        { x: 250, y: 530 },
+        { x: 250, y: 300 },
+        { x: 650, y: 135 },
+        { x: 1270, y: 135 },
+        { x: 1670, y: 300 },
+        { x: 1670, y: 530 },
+      ];
+      return {
+        pos: positions[idx] || positions[0],
+        scale: 1.05,
+        centerCoord: coords[idx] || coords[0],
+        compact: false,
+        maxCardBacks: 3,
+      };
+    }
+    if (total === 7) {
+      // 8 players (7 opponents): 2 Left, 3 Top, 2 Right
+      const positions = [
+        { left: 140, top: 470 },
+        { left: 140, top: 240 },
+        { top: 80, left: 470 },
+        { top: 75, left: 780 },
+        { top: 80, right: 470 },
+        { right: 140, top: 240 },
+        { right: 140, top: 470 },
+      ];
+      const coords = [
+        { x: 250, y: 530 },
+        { x: 250, y: 300 },
+        { x: 580, y: 135 },
+        { x: 960, y: 130 },
+        { x: 1340, y: 135 },
+        { x: 1670, y: 300 },
+        { x: 1670, y: 530 },
+      ];
+      return {
+        pos: positions[idx] || positions[0],
+        scale: 1.0,
+        centerCoord: coords[idx] || coords[0],
+        compact: false,
+        maxCardBacks: 3,
+      };
+    }
+    if (total === 8) {
+      // 9 players (8 opponents): 3 Left, 2 Top, 3 Right
+      const positions = [
+        { left: 140, top: 590 },
+        { left: 140, top: 385 },
+        { left: 140, top: 180 },
+        { top: 80, left: 570 },
+        { top: 80, right: 570 },
+        { right: 140, top: 180 },
+        { right: 140, top: 385 },
+        { right: 140, top: 590 },
+      ];
+      const coords = [
+        { x: 240, y: 640 },
+        { x: 240, y: 440 },
+        { x: 240, y: 240 },
+        { x: 680, y: 135 },
+        { x: 1240, y: 135 },
+        { x: 1680, y: 240 },
+        { x: 1680, y: 440 },
+        { x: 1680, y: 640 },
+      ];
+      return {
+        pos: positions[idx] || positions[0],
+        scale: 0.94,
+        centerCoord: coords[idx] || coords[0],
+        compact: true,
+        maxCardBacks: 3,
+      };
+    }
+    // 10 players (9 opponents): Optimized perimeter (3 Left, 3 Top, 3 Right)
+    const positions = [
+      { left: 130, top: 590 },
+      { left: 130, top: 385 },
+      { left: 130, top: 180 },
+      { top: 75, left: 500 },
+      { top: 70, left: 780 },
+      { top: 75, right: 500 },
+      { right: 130, top: 180 },
+      { right: 130, top: 385 },
+      { right: 130, top: 590 },
     ];
-    const defaultCoords = [
-      { x: 580, y: 140 },
-      { x: 960, y: 135 },
-      { x: 1340, y: 140 },
-      { x: 290, y: 280 },
-      { x: 280, y: 440 },
-      { x: 290, y: 700 },
-      { x: 1630, y: 280 },
-      { x: 1640, y: 440 },
-      { x: 1630, y: 700 },
+    const coords = [
+      { x: 230, y: 640 },
+      { x: 230, y: 440 },
+      { x: 230, y: 240 },
+      { x: 610, y: 130 },
+      { x: 960, y: 125 },
+      { x: 1310, y: 130 },
+      { x: 1690, y: 240 },
+      { x: 1690, y: 440 },
+      { x: 1690, y: 640 },
     ];
-    const scale = total <= 6 ? 1.10 : total <= 8 ? 1.0 : 0.94;
     return {
-      pos: defaultPositions[idx] || defaultPositions[0],
-      scale,
-      centerCoord: defaultCoords[idx] || defaultCoords[0],
+      pos: positions[idx] || positions[0],
+      scale: 0.90,
+      centerCoord: coords[idx] || coords[0],
+      compact: true,
+      maxCardBacks: 3,
     };
   }, []);
 
@@ -746,16 +887,17 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
 
   // Bot Turn Loop (ONLY FOR BOT PLAYERS - Production Hardened Guard)
   const runBotTurn = useCallback(
-    (botIndex: number, currentActiveColor: UnoColor) => {
+    (botIndex: number, currentActiveColor: UnoColor, expectedTurnId?: number) => {
       if (botTimerRef.current) {
         clearTimeout(botTimerRef.current);
         botTimerRef.current = null;
       }
 
       const bot = allPlayersRef.current[botIndex];
-      // BOT TURN GUARD (Part 24): Assert player controller is BOT!
+      // BOT TURN GUARD: Assert player controller is BOT!
       if (!bot || bot.controller !== 'BOT') return;
 
+      const targetTurnId = expectedTurnId !== undefined ? expectedTurnId : turnIdRef.current;
       const expectedBotId = bot.id;
 
       // Visible Bot Thinking moment
@@ -768,13 +910,20 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
       // Natural thinking delay between 1100-1400ms
       botTimerRef.current = setTimeout(() => {
         botTimerRef.current = null;
-        // CANCEL STALE BOT TIMERS GUARD (Part 24 & 25, Section 22: Bot Mode - must wait until complete action finishes)
-        if (actionLock === 'GAME_OVER' || actionLock === 'SHUFFLING_HANDS' || actionLock !== 'IDLE') return;
-        if (currentPlayerIndexRef.current !== botIndex) return; // Stale timer!
+        // CANCEL STALE BOT TIMERS GUARD: Check turnId, bot index, and player controller
+        if (turnIdRef.current !== targetTurnId) {
+          console.log(`[BOT_CANCEL] Cancelled stale bot timer: expected turn ${targetTurnId}, current turn ${turnIdRef.current}`);
+          return;
+        }
+        if (currentPlayerIndexRef.current !== botIndex) {
+          console.log(`[BOT_CANCEL] Cancelled stale bot timer: expected index ${botIndex}, current index ${currentPlayerIndexRef.current}`);
+          return;
+        }
         const currentActive = allPlayersRef.current[currentPlayerIndexRef.current];
         if (!currentActive || currentActive.controller !== 'BOT' || currentActive.id !== expectedBotId) {
           return;
         }
+        if (actionLock === 'GAME_OVER' || actionLock === 'SHUFFLING_HANDS') return;
 
         setDiscardPile(latestDiscard => {
           setDeck(latestDeck => {
@@ -822,7 +971,7 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
                   setActiveColor(chosenColor);
                   activeColorRef.current = chosenColor;
                   NativeEffectsService.triggerCardPlay();
-                  advanceTurnRef.current(stackCard, chosenColor);
+                  advanceTurnRef.current({ playedCard: stackCard, newActiveColor: chosenColor, reason: 'BOT_STACK_DRAW_TWO' });
                 };
 
                 return validDeck;
@@ -839,7 +988,7 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
                   return next;
                 });
                 showToast('STACK PENALTY', `${bot.name} took +${penalty} penalty cards!`, 'penalty');
-                advanceTurnRef.current(undefined, currentActiveColor);
+                advanceTurnRef.current({ newActiveColor: currentActiveColor, reason: 'BOT_ACCEPTED_STACK' });
                 return validDeck;
               }
             }
@@ -859,7 +1008,6 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
                 value: chosenValue as any,
               };
 
-              let botWon = false;
               setAllPlayers(prev => {
                 const next = prev.map((p, idx) => {
                   if (idx === botIndex) {
@@ -904,6 +1052,15 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
                 return validDeck;
               }
 
+              // Apply draw stack if card is DRAW_TWO
+              if (simulatedCard.value === 'DRAW_TWO') {
+                setPendingDrawStack(prev => {
+                  const s = prev + 2;
+                  pendingDrawStackRef.current = s;
+                  return s;
+                });
+              }
+
               // Launch visible play flight from bot position to discard pile
               setFlightConfig({
                 active: true,
@@ -924,7 +1081,7 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
                 });
 
                 NativeEffectsService.triggerCardPlay();
-                advanceTurnRef.current(simulatedCard, chosenColor);
+                advanceTurnRef.current({ playedCard: simulatedCard, newActiveColor: chosenColor, reason: 'BOT_PLAY' });
               };
 
               return validDeck;
@@ -960,7 +1117,7 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
                   color: '#94A3B8',
                 });
 
-                advanceTurnRef.current(undefined, currentActiveColor);
+                advanceTurnRef.current({ newActiveColor: currentActiveColor, reason: 'BOT_DRAW' });
               };
 
               return nextDeck;
@@ -971,43 +1128,58 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
         });
       }, 1250);
     },
-    [actionLock, ensureCardsInDeck, getOpponentLayout, showToast]
+    [actionLock, ensureCardsInDeck, getOpponentLayout, showToast, rules]
   );
 
-  // Authoritative Turn Advancement
-  const advanceTurn = useCallback(
-    (
-      playedCard?: UnoCard,
-      newActiveColor?: UnoColor,
-      extraSkipCount: number = 0
-    ) => {
-      // Clear any pending bot timer immediately (Part 25)
+  // Authoritative Single Turn Advancement Path
+  const advanceToNextActivePlayer = useCallback(
+    (options?: {
+      playedCard?: UnoCard;
+      newActiveColor?: UnoColor;
+      stepMultiplier?: number;
+      reason?: string;
+    }) => {
+      // Clear any pending bot timer immediately
       if (botTimerRef.current) {
         clearTimeout(botTimerRef.current);
         botTimerRef.current = null;
       }
 
-      setActionLock('ADVANCING_TURN');
+      if (actionLock === 'GAME_OVER') return;
+
       setSelectedCardId(null);
       setHasDrawnThisTurn(false);
 
+      const playedCard = options?.playedCard;
+      const newActiveColor = options?.newActiveColor;
+      let stepMultiplier = options?.stepMultiplier ?? 1;
+
+      // Handle Direction & 2-Player Reverse Rule
       let currentDir = playDirectionRef.current;
+      const activePlayers = UnoGameEngine.getEligibleActivePlayers(allPlayersRef.current);
+
       if (playedCard?.value === 'REVERSE') {
+        currentDir = currentDir === 'CW' ? 'CCW' : 'CW';
+        setPlayDirection(currentDir);
+        playDirectionRef.current = currentDir;
+        if (activePlayers.length === 2) {
+          stepMultiplier = 2; // In 2-player game, Reverse acts as Skip!
+        }
+      } else if (playedCard?.value === 'WILD_REVERSE_DRAW_FOUR') {
         currentDir = currentDir === 'CW' ? 'CCW' : 'CW';
         setPlayDirection(currentDir);
         playDirectionRef.current = currentDir;
       }
 
-      let stepMultiplier = 1;
       if (playedCard?.value === 'SKIP') {
         stepMultiplier = 2;
       } else if (playedCard?.value === 'SKIP_EVERYONE') {
         stepMultiplier = 0; // Card player takes another turn immediately!
-      } else if (extraSkipCount > 0) {
-        stepMultiplier = 1 + extraSkipCount;
       }
 
       const curIdx = currentPlayerIndexRef.current;
+      const fromPlayer = allPlayersRef.current[curIdx];
+
       const nextIndex = UnoGameEngine.getNextActivePlayerIndex(
         allPlayersRef.current,
         curIdx,
@@ -1015,37 +1187,47 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
         stepMultiplier
       );
 
-      setCurrentPlayerIndex(nextIndex);
-      currentPlayerIndexRef.current = nextIndex;
-
       const nextPlayer = allPlayersRef.current[nextIndex];
       if (!nextPlayer) return;
 
+      // Increment turnId & revision
+      const nextTurnId = turnIdRef.current + 1;
+      turnIdRef.current = nextTurnId;
+      setTurnId(nextTurnId);
+
+      setCurrentPlayerIndex(nextIndex);
+      currentPlayerIndexRef.current = nextIndex;
+
+      if (newActiveColor) {
+        setActiveColor(newActiveColor);
+        activeColorRef.current = newActiveColor;
+      }
+
       const effectiveColor = newActiveColor || activeColorRef.current;
+
+      console.log(`[TURN_CHANGE] from=${fromPlayer?.name} (${fromPlayer?.id}) to=${nextPlayer.name} (${nextPlayer.id}) reason=${options?.reason || playedCard?.value || 'NORMAL'}`);
+      console.log(`[TURN] turnId=${nextTurnId} player=${nextPlayer.name} controller=${nextPlayer.controller} direction=${currentDir} phase=WAITING_FOR_ACTION drawStack=${pendingDrawStackRef.current}`);
 
       if (nextPlayer.controller === 'LOCAL_HUMAN') {
         if (isPassAndPlay) {
-          // ENTER LOCAL PASS / HANDOFF STATE (Part 2 & 3)
           setHandoffTarget(nextPlayer);
           setActionLock('PASS_DEVICE');
         } else {
-          // Play Bots or Online host: Local player's turn!
           setActionLock('IDLE');
           NativeEffectsService.triggerTurnChange();
         }
       } else if (nextPlayer.controller === 'BOT') {
-        // Run bot turn ONLY when player controller is BOT! (Part 5 & 24)
-        setActionLock('ADVANCING_TURN');
-        runBotTurn(nextIndex, effectiveColor);
+        setActionLock('IDLE');
+        runBotTurn(nextIndex, effectiveColor, nextTurnId);
       } else {
-        // REMOTE_HUMAN: wait for network command
         setActionLock('WAITING_FOR_REMOTE_PLAYER');
       }
     },
-    [isPassAndPlay, runBotTurn]
+    [isPassAndPlay, runBotTurn, actionLock]
   );
 
-  advanceTurnRef.current = advanceTurn;
+  advanceTurnRef.current = advanceToNextActivePlayer;
+  const advanceTurn = advanceToNextActivePlayer;
 
   // 2. DRAW CARD Action & Draw Stack Handling (Parts 5 & 21)
   const handleDrawCard = useCallback(() => {
@@ -1124,7 +1306,7 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
       }
 
       // Penalty drawer loses turn
-      advanceTurn(undefined, activeColor);
+      advanceToNextActivePlayer({ newActiveColor: activeColor, reason: 'ACCEPTED_DRAW_STACK' });
       return;
     }
 
@@ -1182,7 +1364,7 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
 
       session.drawCard();
     };
-  }, [isMyTurn, actionLock, pendingDrawStack, hasDrawnThisTurn, deck, discardPile, ensureCardsInDeck, showToast, session, advanceTurn, activeColor]);
+  }, [isMyTurn, actionLock, pendingDrawStack, hasDrawnThisTurn, deck, discardPile, ensureCardsInDeck, showToast, session, advanceToNextActivePlayer, activeColor]);
 
   // 3. PLAY CARD (Two-Tap Confirmed)
   const handlePlayCard = useCallback(
@@ -1365,11 +1547,11 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
         });
 
         NativeEffectsService.triggerCardPlay();
-        advanceTurn(card, finalColor, extraSkips);
+        advanceToNextActivePlayer({ playedCard: card, newActiveColor: finalColor, stepMultiplier: extraSkips ? 1 + extraSkips : undefined, reason: 'COMMIT_PLAY' });
         session.playCard(card.id, finalColor);
       };
     },
-    [hasCalledUno, showToast, advanceTurn, session]
+    [hasCalledUno, showToast, advanceToNextActivePlayer, session, rules]
   );
 
   // Dedicated Shuffle Hands Logic (Used identically by Dedicated Shuffle Hands & Custom Wild)
@@ -1424,6 +1606,7 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
 
       // 3. Set Action Lock to SHUFFLING_HANDS (blocks all user inputs & bot timers)
       setActionLock('SHUFFLING_HANDS');
+      pendingEffectRef.current = true;
 
       // 4. Store pending result to commit once animation finishes
       pendingShuffleResultRef.current = {
@@ -1449,6 +1632,7 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
 
   // Callback when ShuffleHandsAnimation completes
   const handleShuffleAnimationComplete = useCallback(() => {
+    pendingEffectRef.current = false;
     const pending = pendingShuffleResultRef.current;
     if (pending) {
       const { result, cardPlayerId, pendingCard } = pending;
@@ -1477,6 +1661,7 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
 
       if (isCardPlayerLocal) {
         setPendingWildCard(pendingCard || { id: `wild_shuffle_${Date.now()}`, color: 'WILD', value: 'SHUFFLE_HANDS' });
+        pendingChoiceRef.current = 'WILD_COLOR';
         setCanChooseWild(true);
         setWildChooserName(curPlayer?.name || 'You');
         setActionLock('CHOOSING_WILD_COLOR');
@@ -1487,7 +1672,7 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
         setActiveColor(chosenColor);
         activeColorRef.current = chosenColor;
         setActionLock('IDLE');
-        advanceTurn(pendingCard || undefined, chosenColor);
+        advanceToNextActivePlayer({ playedCard: pendingCard || undefined, newActiveColor: chosenColor, reason: 'SHUFFLE_HANDS_BOT' });
       } else {
         // Remote player is choosing color
         setActionLock('WAITING_FOR_REMOTE_PLAYER');
@@ -1496,41 +1681,113 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
       setShuffleAnimationConfig(null);
       setActionLock('IDLE');
     }
-  }, [session, activeRoom, showToast, advanceTurn]);
+  }, [session, activeRoom, showToast, advanceToNextActivePlayer]);
 
-  // Pass Hands in Direction Logic (Part 3 - 0 Card)
+  // Pass Hands in Direction Logic (0 Card)
   const executePassHandsLogic = useCallback((card: UnoCard) => {
+    const curIdx = currentPlayerIndexRef.current;
+    const curPlayer = allPlayersRef.current[curIdx];
+    if (!curPlayer) return;
+
+    // 1. Remove played 0 card from current player's hand first
+    const updatedHand = curPlayer.hand.filter(c => c.id !== card.id);
+    const playersWithCardRemoved = allPlayersRef.current.map((p, idx) =>
+      idx === curIdx ? { ...p, hand: updatedHand, cardCount: updatedHand.length } : p
+    );
+
+    // 2. Put 0 card on discard pile
+    setDiscardPile(prev => [...prev, card]);
+    setActiveColor(card.color);
+    activeColorRef.current = card.color;
+
+    // 3. Pass hands in current direction
     const { updatedPlayers } = UnoGameEngine.executePassHandsInDirection(
-      allPlayersRef.current,
+      playersWithCardRemoved,
       playDirectionRef.current
     );
-    setAllPlayers(updatedPlayers);
     allPlayersRef.current = updatedPlayers;
-    showToast('0 PASS HANDS', `Hands passed ${playDirectionRef.current === 'CW' ? 'Clockwise' : 'Counter-Clockwise'}!`, 'warning');
-    commitPlay(card, card.color);
-  }, [showToast, commitPlay]);
+    setAllPlayers(updatedPlayers);
 
-  // Discard All Logic (Part 3)
+    showToast('0 PASS HANDS', `Hands passed ${playDirectionRef.current === 'CW' ? 'Clockwise' : 'Counter-Clockwise'}!`, 'warning');
+    console.log(`[EFFECT] turnId=${turnIdRef.current} card=0 source=${curPlayer.name} effect=PASS_HANDS direction=${playDirectionRef.current}`);
+
+    // 4. Evaluate completion / win
+    const evalResult = UnoGameEngine.evaluatePlayerCompletion(
+      updatedPlayers,
+      rules,
+      finishingOrderRef.current,
+      eliminatedOrderRef.current
+    );
+
+    finishingOrderRef.current = evalResult.finishingOrder;
+    eliminatedOrderRef.current = evalResult.eliminatedOrder;
+    setFinishingOrder(evalResult.finishingOrder);
+    setEliminatedOrder(evalResult.eliminatedOrder);
+    allPlayersRef.current = evalResult.updatedPlayers;
+    setAllPlayers(evalResult.updatedPlayers);
+
+    if (evalResult.isMatchOver) {
+      setFinalResults(evalResult.finalResults);
+      const w = evalResult.winner || curPlayer;
+      setWinner(w ? { name: w.name, avatar: w.avatar, isHuman: w.isHuman } : null);
+      setActionLock('GAME_OVER');
+      return;
+    }
+
+    advanceToNextActivePlayer({ playedCard: card, newActiveColor: card.color, reason: 'PASS_HANDS' });
+  }, [rules, showToast, advanceToNextActivePlayer]);
+
+  // Discard All Logic
   const executeDiscardAllLogic = useCallback((card: UnoCard) => {
     const curIdx = currentPlayerIndexRef.current;
     const curPlayer = allPlayersRef.current[curIdx];
     if (!curPlayer) return;
 
+    // 1. Remove the played DISCARD_ALL card first, then discard all remaining matching color
+    const handWithoutCard = curPlayer.hand.filter(c => c.id !== card.id);
+    const playerWithoutCard = { ...curPlayer, hand: handWithoutCard, cardCount: handWithoutCard.length };
+
     const { updatedPlayer, updatedDiscard, discardedCount } = UnoGameEngine.executeDiscardAll(
-      curPlayer,
-      discardPile,
+      playerWithoutCard,
+      [...discardPile, card],
       card.color
     );
 
-    setAllPlayers(prev => {
-      const next = prev.map((p, idx) => (idx === curIdx ? updatedPlayer : p));
-      allPlayersRef.current = next;
-      return next;
-    });
+    const nextPlayers = allPlayersRef.current.map((p, idx) => (idx === curIdx ? updatedPlayer : p));
+    allPlayersRef.current = nextPlayers;
+    setAllPlayers(nextPlayers);
     setDiscardPile(updatedDiscard);
-    showToast('DISCARD ALL', `Discarded ${discardedCount} ${card.color} cards!`, 'warning');
-    commitPlay(card, card.color);
-  }, [discardPile, showToast, commitPlay]);
+    setActiveColor(card.color);
+    activeColorRef.current = card.color;
+
+    showToast('DISCARD ALL', `Discarded ${discardedCount + 1} ${card.color} cards!`, 'warning');
+    console.log(`[EFFECT] turnId=${turnIdRef.current} card=DISCARD_ALL source=${curPlayer.name} color=${card.color} count=${discardedCount + 1}`);
+
+    // 2. Evaluate completion / win
+    const evalResult = UnoGameEngine.evaluatePlayerCompletion(
+      nextPlayers,
+      rules,
+      finishingOrderRef.current,
+      eliminatedOrderRef.current
+    );
+
+    finishingOrderRef.current = evalResult.finishingOrder;
+    eliminatedOrderRef.current = evalResult.eliminatedOrder;
+    setFinishingOrder(evalResult.finishingOrder);
+    setEliminatedOrder(evalResult.eliminatedOrder);
+    allPlayersRef.current = evalResult.updatedPlayers;
+    setAllPlayers(evalResult.updatedPlayers);
+
+    if (evalResult.isMatchOver) {
+      setFinalResults(evalResult.finalResults);
+      const w = evalResult.winner || curPlayer;
+      setWinner(w ? { name: w.name, avatar: w.avatar, isHuman: w.isHuman } : null);
+      setActionLock('GAME_OVER');
+      return;
+    }
+
+    advanceToNextActivePlayer({ playedCard: card, newActiveColor: card.color, reason: 'DISCARD_ALL' });
+  }, [discardPile, rules, showToast, advanceToNextActivePlayer]);
 
   // Wild Color Selection Callback
   const handleWildColorSelected = useCallback(
@@ -1538,6 +1795,7 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
       if (!pendingWildCard) return;
       const card = pendingWildCard;
       setPendingWildCard(null);
+      pendingChoiceRef.current = null;
 
       if (card.value === 'SHUFFLE_HANDS' || card.value === 'CUSTOM_WILD') {
         setActiveColor(color);
@@ -1549,27 +1807,26 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
           color: COLOR_MAP[color] || COLORS.unoYellow,
         });
         NativeEffectsService.triggerCardPlay();
-        advanceTurn(card, color);
+        advanceToNextActivePlayer({ playedCard: card, newActiveColor: color, reason: 'WILD_COLOR' });
         session.chooseWildColor(color);
       } else {
         commitPlay(card, color);
         session.chooseWildColor(color);
       }
     },
-    [pendingWildCard, commitPlay, session, advanceTurn]
+    [pendingWildCard, commitPlay, session, advanceToNextActivePlayer]
   );
 
-  // Custom Wild Power Selection Callback (Part 2)
+  // Custom Wild Power Selection Callback
   const handleCustomWildPowerSelected = useCallback(
     (power: CustomWildPower) => {
       setCustomWildModalVisible(false);
+      pendingChoiceRef.current = null;
       session.chooseCustomWildPower(power);
 
       if (power === 'SHUFFLE_HANDS') {
-        // Section 14: Trigger the exact same Shuffle Hands animation
         executeShuffleHandsLogic(pendingWildCard);
       } else if (power === 'EVERYONE_PLUS_FOUR') {
-        // Section 16: Everyone +4 preserves draw stack and gives penalty cards; does NOT trigger shuffle
         const curIdx = currentPlayerIndexRef.current;
         setAllPlayers(prev => {
           const next = prev.map((p, idx) =>
@@ -1581,53 +1838,175 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
           return next;
         });
         showToast('EVERYONE +4', 'Every other player received +4 penalty cards!', 'penalty');
+        pendingChoiceRef.current = 'WILD_COLOR';
         setActionLock('CHOOSING_WILD_COLOR');
       }
     },
     [executeShuffleHandsLogic, session, showToast, pendingWildCard]
   );
 
-  // 7 Swap Player Selection Callback (Part 3)
+  // 7 Swap Player Selection Callback
   const handleSwapPlayerSelected = useCallback(
     (targetPlayerId: string) => {
       setSwapModalVisible(false);
+      pendingChoiceRef.current = null;
       session.chooseSwapTarget(targetPlayerId);
 
+      const curIdx = currentPlayerIndexRef.current;
+      const curPlayer = allPlayersRef.current[curIdx];
       const target = allPlayersRef.current.find(p => p.id === targetPlayerId);
-      if (target) {
-        showToast('SWAP HANDS', `Exchanged hand with ${target.name}!`, 'warning');
+      if (!curPlayer || !target) return;
+
+      const card = pendingWildCard;
+      setPendingWildCard(null);
+
+      // 1. Remove the 7 card from current player's hand and put on discard pile
+      let handWithoutCard = curPlayer.hand;
+      if (card) {
+        handWithoutCard = curPlayer.hand.filter(c => c.id !== card.id);
+      }
+      const playerWithUpdatedHand = {
+        ...curPlayer,
+        hand: handWithoutCard,
+        cardCount: handWithoutCard.length,
+      };
+
+      const playersBeforeSwap = allPlayersRef.current.map((p, idx) =>
+        idx === curIdx ? playerWithUpdatedHand : p
+      );
+
+      // 2. Execute swap hands
+      const { updatedPlayers } = UnoGameEngine.executeSwapHands(
+        playersBeforeSwap,
+        curPlayer.id,
+        targetPlayerId
+      );
+
+      allPlayersRef.current = updatedPlayers;
+      setAllPlayers(updatedPlayers);
+
+      if (card) {
+        setDiscardPile(prev => [...prev, card]);
+        setActiveColor(card.color);
+        activeColorRef.current = card.color;
       }
 
-      if (pendingWildCard) {
-        commitPlay(pendingWildCard, pendingWildCard.color);
+      showToast('SWAP HANDS', `Exchanged hands with ${target.name}!`, 'warning');
+      console.log(`[EFFECT] turnId=${turnIdRef.current} card=7 source=${curPlayer.name} target=${target.name} effect=SWAP_HANDS`);
+
+      // 3. Evaluate completion / win
+      const evalResult = UnoGameEngine.evaluatePlayerCompletion(
+        updatedPlayers,
+        rules,
+        finishingOrderRef.current,
+        eliminatedOrderRef.current
+      );
+
+      finishingOrderRef.current = evalResult.finishingOrder;
+      eliminatedOrderRef.current = evalResult.eliminatedOrder;
+      setFinishingOrder(evalResult.finishingOrder);
+      setEliminatedOrder(evalResult.eliminatedOrder);
+      allPlayersRef.current = evalResult.updatedPlayers;
+      setAllPlayers(evalResult.updatedPlayers);
+
+      if (evalResult.isMatchOver) {
+        setFinalResults(evalResult.finalResults);
+        const w = evalResult.winner || curPlayer;
+        setWinner(w ? { name: w.name, avatar: w.avatar, isHuman: w.isHuman } : null);
+        setActionLock('GAME_OVER');
+        return;
       }
+
+      advanceToNextActivePlayer({ playedCard: card || undefined, newActiveColor: card?.color, reason: 'SWAP_HANDS' });
     },
-    [session, showToast, pendingWildCard, commitPlay]
+    [pendingWildCard, rules, showToast, session, advanceToNextActivePlayer]
   );
 
-  // Roulette Color Selection Callback (Part 4)
+  // Roulette Color Selection Callback
   const handleRouletteColorSelected = useCallback(
     (color: UnoColor) => {
       setRouletteModalVisible(false);
+      pendingChoiceRef.current = null;
       session.chooseRouletteColor(color);
 
+      const curIdx = currentPlayerIndexRef.current;
+      const curPlayer = allPlayersRef.current[curIdx];
+      const card = pendingWildCard;
+      setPendingWildCard(null);
+
+      // Target is next active player
+      const targetIdx = UnoGameEngine.getNextActivePlayerIndex(
+        allPlayersRef.current,
+        curIdx,
+        playDirectionRef.current,
+        1
+      );
+      const targetPlayer = allPlayersRef.current[targetIdx];
+
+      // Remove card from current player's hand and put on discard pile
+      if (card && curPlayer) {
+        const nextHand = curPlayer.hand.filter(c => c.id !== card.id);
+        allPlayersRef.current = allPlayersRef.current.map((p, idx) =>
+          idx === curIdx ? { ...p, hand: nextHand, cardCount: nextHand.length } : p
+        );
+        setDiscardPile(prev => [...prev, card]);
+      }
+      setActiveColor(color);
+      activeColorRef.current = color;
+
       // Execute roulette draw for target
-      const { updatedDrawPile: newDraw, updatedDiscardPile: newDiscard, drawnCards } = UnoGameEngine.executeColorRouletteDraw(
-        { id: 'target', name: '', avatar: '', isHuman: false, controller: 'BOT', hand: [], cardCount: 0 },
-        deck,
-        discardPile,
-        color
+      if (targetPlayer) {
+        const { updatedPlayer, updatedDrawPile, updatedDiscardPile, drawnCards } = UnoGameEngine.executeColorRouletteDraw(
+          targetPlayer,
+          deck,
+          discardPile,
+          color
+        );
+
+        setDeck(updatedDrawPile);
+        setDiscardPile(updatedDiscardPile);
+        const nextPlayers = allPlayersRef.current.map((p, idx) =>
+          idx === targetIdx ? updatedPlayer : p
+        );
+        allPlayersRef.current = nextPlayers;
+        setAllPlayers(nextPlayers);
+
+        showToast('ROULETTE DRAW', `${targetPlayer.name} drew ${drawnCards.length} cards until ${color} appeared!`, 'penalty');
+        console.log(`[EFFECT] turnId=${turnIdRef.current} card=COLOR_ROULETTE source=${curPlayer?.name} target=${targetPlayer.name} color=${color} drawn=${drawnCards.length}`);
+      }
+
+      // Check completions
+      const evalResult = UnoGameEngine.evaluatePlayerCompletion(
+        allPlayersRef.current,
+        rules,
+        finishingOrderRef.current,
+        eliminatedOrderRef.current
       );
 
-      setDeck(newDraw);
-      setDiscardPile(newDiscard);
-      showToast('ROULETTE DRAW', `Target drew ${drawnCards.length} cards until ${color} appeared!`, 'penalty');
+      finishingOrderRef.current = evalResult.finishingOrder;
+      eliminatedOrderRef.current = evalResult.eliminatedOrder;
+      setFinishingOrder(evalResult.finishingOrder);
+      setEliminatedOrder(evalResult.eliminatedOrder);
+      allPlayersRef.current = evalResult.updatedPlayers;
+      setAllPlayers(evalResult.updatedPlayers);
 
-      if (pendingWildCard) {
-        commitPlay(pendingWildCard, color, 1); // Target draws and loses turn
+      if (evalResult.isMatchOver) {
+        setFinalResults(evalResult.finalResults);
+        const w = evalResult.winner;
+        setWinner(w ? { name: w.name, avatar: w.avatar, isHuman: w.isHuman } : null);
+        setActionLock('GAME_OVER');
+        return;
       }
+
+      // Target loses turn: advance with stepMultiplier = 2 (skipping target)
+      advanceToNextActivePlayer({
+        playedCard: card || undefined,
+        newActiveColor: color,
+        stepMultiplier: 2,
+        reason: 'COLOR_ROULETTE_SKIP',
+      });
     },
-    [deck, discardPile, session, showToast, pendingWildCard, commitPlay]
+    [deck, discardPile, rules, showToast, session, advanceToNextActivePlayer, pendingWildCard]
   );
 
   // End Turn Action
@@ -1640,9 +2019,9 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
     }
 
     NativeEffectsService.triggerTurnChange();
-    advanceTurn();
+    advanceToNextActivePlayer({ reason: 'END_TURN' });
     session.endTurn();
-  }, [isMyTurn, actionLock, hasDrawnThisTurn, showToast, advanceTurn, session]);
+  }, [isMyTurn, actionLock, hasDrawnThisTurn, showToast, advanceToNextActivePlayer, session]);
 
   // In-Game UNO Call
   const handleCallUno = useCallback(() => {

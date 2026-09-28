@@ -7,37 +7,43 @@ interface OpponentNodeProps {
   player: Player;
   isTurn?: boolean;
   scale?: number;
+  maxCardBacks?: number;
+  compact?: boolean;
 }
 
 export const NativeOpponentNode: React.FC<OpponentNodeProps> = ({
   player,
   isTurn: rawIsTurn = false,
   scale = 1.0,
+  maxCardBacks,
+  compact = false,
 }) => {
   const isFinished = player.status === 'FINISHED' || (player.hand && player.hand.length === 0 && player.cardCount === 0 && player.status !== 'ACTIVE' && player.finishRank !== undefined);
   const isEliminated = player.status === 'ELIMINATED' || player.isEliminated;
   const isTurn = !isFinished && !isEliminated && rawIsTurn;
 
-  const cardCount = isFinished || isEliminated ? 0 : Math.min(player.cardCount, 8);
-  const cardAngles = [-15, -10, -5, 0, 5, 10, 15, 20];
+  const cap = maxCardBacks !== undefined ? maxCardBacks : (compact ? 3 : 4);
+  const cardCount = isFinished || isEliminated ? 0 : Math.min(player.cardCount, cap);
+  const cardAngles = cardCount <= 2 ? [-6, 6] : cardCount === 3 ? [-10, 0, 10] : [-12, -4, 4, 12];
 
   return (
     <View style={[styles.container, { transform: [{ scale }] }]}>
-      {/* Mini Card Fan */}
+      {/* Mini Card Fan: Small visual fan of 2-4 card backs */}
       <View style={styles.fanContainer}>
         {Array.from({ length: cardCount }).map((_, idx) => (
           <View
             key={idx}
             style={[
               styles.miniCard,
+              compact && styles.miniCardCompact,
               {
-                marginLeft: idx === 0 ? 0 : -16,
+                marginLeft: idx === 0 ? 0 : (compact ? -18 : -14),
                 transform: [{ rotate: `${cardAngles[idx % cardAngles.length]}deg` }],
               },
             ]}
           >
-            <View style={styles.miniCardBack}>
-              <Text style={styles.miniUnoText}>U</Text>
+            <View style={[styles.miniCardBack, compact && styles.miniCardBackCompact]}>
+              <Text style={[styles.miniUnoText, compact && styles.miniUnoTextCompact]}>U</Text>
             </View>
           </View>
         ))}
@@ -47,13 +53,14 @@ export const NativeOpponentNode: React.FC<OpponentNodeProps> = ({
       <View
         style={[
           styles.badge,
+          compact && styles.badgeCompact,
           isTurn && styles.badgeTurn,
           isFinished && styles.badgeFinished,
           isEliminated && styles.badgeEliminated,
         ]}
       >
         {player.isHost && (
-          <View style={styles.hostCrown}>
+          <View style={[styles.hostCrown, compact && styles.hostCrownCompact]}>
             <Text style={styles.crownText}>👑</Text>
           </View>
         )}
@@ -61,12 +68,13 @@ export const NativeOpponentNode: React.FC<OpponentNodeProps> = ({
         <View
           style={[
             styles.avatarCircle,
+            compact && styles.avatarCircleCompact,
             isTurn && styles.avatarCircleTurn,
             isFinished && styles.avatarCircleFinished,
             isEliminated && styles.avatarCircleEliminated,
           ]}
         >
-          <Text style={styles.avatarText}>{player.avatar}</Text>
+          <Text style={[styles.avatarText, compact && styles.avatarTextCompact]}>{player.avatar}</Text>
         </View>
 
         <View style={styles.textColumn}>
@@ -74,6 +82,7 @@ export const NativeOpponentNode: React.FC<OpponentNodeProps> = ({
             <Text
               style={[
                 styles.nameText,
+                compact && styles.nameTextCompact,
                 isFinished && styles.nameTextFinished,
                 isEliminated && styles.nameTextEliminated,
               ]}
@@ -97,6 +106,7 @@ export const NativeOpponentNode: React.FC<OpponentNodeProps> = ({
           <Text
             style={[
               styles.cardCountText,
+              compact && styles.cardCountTextCompact,
               player.cardCount === 1 && !isFinished && !isEliminated && styles.unoCountText,
               isFinished && styles.finishedCountText,
               isEliminated && styles.eliminatedCountText,
@@ -279,5 +289,42 @@ const styles = StyleSheet.create({
   eliminatedCountText: {
     color: '#F87171',
     fontWeight: '800',
+  },
+  miniCardCompact: {
+    width: 28,
+    height: 42,
+    borderRadius: 5,
+  },
+  miniCardBackCompact: {
+    width: 20,
+    height: 32,
+  },
+  miniUnoTextCompact: {
+    fontSize: 9,
+  },
+  badgeCompact: {
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: 22,
+  },
+  hostCrownCompact: {
+    top: -12,
+    left: 8,
+    paddingHorizontal: 4,
+  },
+  avatarCircleCompact: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    marginRight: 8,
+  },
+  avatarTextCompact: {
+    fontSize: 20,
+  },
+  nameTextCompact: {
+    fontSize: 13,
+  },
+  cardCountTextCompact: {
+    fontSize: 11,
   },
 });
