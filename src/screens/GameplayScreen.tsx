@@ -19,6 +19,7 @@ import { ShuffleHandsAnimation, ShuffleParticipant } from '../components/gamepla
 import { UnoCard, UnoColor, Player, GameRules, CustomWildPower, DeckType, PlayerController, GameEndMode, PlayerStatus } from '../types/game';
 import { UnoDeckService } from '../game/UnoDeckService';
 import { UnoGameEngine, ShuffleHandsResult, FinalRankItem } from '../game/UnoGameEngine';
+import { getPlayerLayout, getSingleOpponentLayout } from '../game/ResponsiveTableLayout';
 import { COLORS, COLOR_MAP } from '../constants/theme';
 import { NativeEffectsService } from '../services/NativeEffects';
 import { MultiplayerSession } from '../multiplayer/MultiplayerSession';
@@ -99,6 +100,7 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
   const pendingDrawStackRef = useRef<number>(0);
   const botTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const advanceTurnRef = useRef<(options?: { playedCard?: UnoCard; newActiveColor?: UnoColor; stepMultiplier?: number; reason?: string }) => void>(() => {});
+  const handleRouletteRef = useRef<((color: UnoColor) => void) | null>(null);
 
   // Pass & Play device handoff target
   const [handoffTarget, setHandoffTarget] = useState<Player | null>(null);
@@ -122,6 +124,25 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
   const [rouletteModalVisible, setRouletteModalVisible] = useState<boolean>(false);
   const [canChooseRoulette, setCanChooseRoulette] = useState<boolean>(true);
   const [rouletteTargetName, setRouletteTargetName] = useState<string>('Player');
+
+  // Watchdog Dead-End Assertion (Requirement 63):
+  // Detects any lingering transient lock state (DRAWING_CARD, PLAYING_CARD, or orphaned modals)
+  // and auto-reconciles to IDLE with a logged recovery to prevent freezes.
+  useEffect(() => {
+    if (actionLock === 'IDLE' || actionLock === 'GAME_OVER') return;
+
+    const watchdog = setTimeout(() => {
+      if (actionLock === 'DRAWING_CARD' || actionLock === 'PLAYING_CARD') {
+        console.warn(`[DEAD_END_ASSERTION] Transient lock '${actionLock}' timed out. Auto-reconciling to IDLE.`);
+        setActionLock('IDLE');
+      } else if (actionLock === 'CHOOSING_WILD_COLOR' && !pendingWildCard) {
+        console.warn(`[DEAD_END_ASSERTION] Orphaned CHOOSING_WILD_COLOR lock without pending card. Auto-reconciling to IDLE.`);
+        setActionLock('IDLE');
+      }
+    }, 6000);
+
+    return () => clearTimeout(watchdog);
+  }, [actionLock, pendingWildCard]);
 
   // In-Game UNO Toast State
   const [unoToast, setUnoToast] = useState<{
@@ -616,18 +637,22 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
   }, [initializeGame, showToast, activeRoom, session]);
 
   const isPassAndPlay = activeRoom?.mode === 'PASS_AND_PLAY';
+  const localUser = session.getLocalPlayer();
+  const activePlayer = allPlayers[currentPlayerIndex];
+
   const myHand = (isPassAndPlay
-    ? allPlayers[currentPlayerIndex]?.hand
-    : allPlayers[0]?.hand) || [];
+    ? activePlayer?.hand
+    : (allPlayers.find(p => p.id === localUser?.id)?.hand || allPlayers[0]?.hand)) || [];
 
   const opponents = isPassAndPlay
     ? allPlayers.filter((_, idx) => idx !== currentPlayerIndex)
-    : allPlayers.slice(1);
+    : allPlayers.filter(p => p.id !== (localUser?.id || allPlayers[0]?.id));
 
   const isMyTurn =
     (isPassAndPlay
-      ? allPlayers[currentPlayerIndex]?.controller === 'LOCAL_HUMAN'
-      : currentPlayerIndex === 0) &&
+      ? activePlayer?.controller === 'LOCAL_HUMAN'
+      : (activePlayer?.id === localUser?.id || (!localUser && currentPlayerIndex === 0)) &&
+        activePlayer?.controller === 'LOCAL_HUMAN') &&
     actionLock === 'IDLE';
 
   const ensureCardsInDeck = useCallback(
@@ -646,213 +671,16 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
 
   // Dynamic player-count aware opponent layout & scaling for 2 to 10 players
   const getOpponentLayout = useCallback((idx: number, total: number) => {
-    if (total <= 1) {
-      // 2 players (1 opponent): Top center, large prominent duel layout
-      return {
-        pos: { top: 80, left: 780 },
-        scale: 1.45,
-        centerCoord: { x: 960, y: 150 },
-        compact: false,
-        maxCardBacks: 4,
-      };
-    }
-    if (total === 2) {
-      // 3 players (2 opponents): Top left & Top right
-      const positions = [
-        { top: 85, left: 450 },
-        { top: 85, right: 450 },
-      ];
-      const coords = [
-        { x: 580, y: 145 },
-        { x: 1340, y: 145 },
-      ];
-      return {
-        pos: positions[idx] || positions[0],
-        scale: 1.30,
-        centerCoord: coords[idx] || coords[0],
-        compact: false,
-        maxCardBacks: 4,
-      };
-    }
-    if (total === 3) {
-      // 4 players (3 opponents): Left, Top-center, Right
-      const positions = [
-        { left: 140, top: 370 },
-        { top: 80, left: 780 },
-        { right: 140, top: 370 },
-      ];
-      const coords = [
-        { x: 260, y: 440 },
-        { x: 960, y: 140 },
-        { x: 1660, y: 440 },
-      ];
-      return {
-        pos: positions[idx] || positions[0],
-        scale: 1.25,
-        centerCoord: coords[idx] || coords[0],
-        compact: false,
-        maxCardBacks: 4,
-      };
-    }
-    if (total === 4) {
-      // 5 players (4 opponents): Left, Top-Left, Top-Right, Right
-      const positions = [
-        { left: 140, top: 370 },
-        { top: 85, left: 510 },
-        { top: 85, right: 510 },
-        { right: 140, top: 370 },
-      ];
-      const coords = [
-        { x: 260, y: 440 },
-        { x: 620, y: 140 },
-        { x: 1300, y: 140 },
-        { x: 1660, y: 440 },
-      ];
-      return {
-        pos: positions[idx] || positions[0],
-        scale: 1.18,
-        centerCoord: coords[idx] || coords[0],
-        compact: false,
-        maxCardBacks: 3,
-      };
-    }
-    if (total === 5) {
-      // 6 players (5 opponents): 2 Left, 1 Top-center, 2 Right
-      const positions = [
-        { left: 140, top: 400 },
-        { left: 160, top: 220 },
-        { top: 80, left: 780 },
-        { right: 160, top: 220 },
-        { right: 140, top: 400 },
-      ];
-      const coords = [
-        { x: 250, y: 460 },
-        { x: 270, y: 280 },
-        { x: 960, y: 135 },
-        { x: 1650, y: 280 },
-        { x: 1670, y: 460 },
-      ];
-      return {
-        pos: positions[idx] || positions[0],
-        scale: 1.12,
-        centerCoord: coords[idx] || coords[0],
-        compact: false,
-        maxCardBacks: 3,
-      };
-    }
-    if (total === 6) {
-      // 7 players (6 opponents): 2 Left, 2 Top, 2 Right
-      const positions = [
-        { left: 140, top: 470 },
-        { left: 140, top: 240 },
-        { top: 80, left: 540 },
-        { top: 80, right: 540 },
-        { right: 140, top: 240 },
-        { right: 140, top: 470 },
-      ];
-      const coords = [
-        { x: 250, y: 530 },
-        { x: 250, y: 300 },
-        { x: 650, y: 135 },
-        { x: 1270, y: 135 },
-        { x: 1670, y: 300 },
-        { x: 1670, y: 530 },
-      ];
-      return {
-        pos: positions[idx] || positions[0],
-        scale: 1.05,
-        centerCoord: coords[idx] || coords[0],
-        compact: false,
-        maxCardBacks: 3,
-      };
-    }
-    if (total === 7) {
-      // 8 players (7 opponents): 2 Left, 3 Top, 2 Right
-      const positions = [
-        { left: 140, top: 470 },
-        { left: 140, top: 240 },
-        { top: 80, left: 470 },
-        { top: 75, left: 780 },
-        { top: 80, right: 470 },
-        { right: 140, top: 240 },
-        { right: 140, top: 470 },
-      ];
-      const coords = [
-        { x: 250, y: 530 },
-        { x: 250, y: 300 },
-        { x: 580, y: 135 },
-        { x: 960, y: 130 },
-        { x: 1340, y: 135 },
-        { x: 1670, y: 300 },
-        { x: 1670, y: 530 },
-      ];
-      return {
-        pos: positions[idx] || positions[0],
-        scale: 1.0,
-        centerCoord: coords[idx] || coords[0],
-        compact: false,
-        maxCardBacks: 3,
-      };
-    }
-    if (total === 8) {
-      // 9 players (8 opponents): 3 Left, 2 Top, 3 Right
-      const positions = [
-        { left: 140, top: 590 },
-        { left: 140, top: 385 },
-        { left: 140, top: 180 },
-        { top: 80, left: 570 },
-        { top: 80, right: 570 },
-        { right: 140, top: 180 },
-        { right: 140, top: 385 },
-        { right: 140, top: 590 },
-      ];
-      const coords = [
-        { x: 240, y: 640 },
-        { x: 240, y: 440 },
-        { x: 240, y: 240 },
-        { x: 680, y: 135 },
-        { x: 1240, y: 135 },
-        { x: 1680, y: 240 },
-        { x: 1680, y: 440 },
-        { x: 1680, y: 640 },
-      ];
-      return {
-        pos: positions[idx] || positions[0],
-        scale: 0.94,
-        centerCoord: coords[idx] || coords[0],
-        compact: true,
-        maxCardBacks: 3,
-      };
-    }
-    // 10 players (9 opponents): Optimized perimeter (3 Left, 3 Top, 3 Right)
-    const positions = [
-      { left: 130, top: 590 },
-      { left: 130, top: 385 },
-      { left: 130, top: 180 },
-      { top: 75, left: 500 },
-      { top: 70, left: 780 },
-      { top: 75, right: 500 },
-      { right: 130, top: 180 },
-      { right: 130, top: 385 },
-      { right: 130, top: 590 },
-    ];
-    const coords = [
-      { x: 230, y: 640 },
-      { x: 230, y: 440 },
-      { x: 230, y: 240 },
-      { x: 610, y: 130 },
-      { x: 960, y: 125 },
-      { x: 1310, y: 130 },
-      { x: 1690, y: 240 },
-      { x: 1690, y: 440 },
-      { x: 1690, y: 640 },
-    ];
+    const layout = getSingleOpponentLayout(idx, total);
     return {
-      pos: positions[idx] || positions[0],
-      scale: 0.90,
-      centerCoord: coords[idx] || coords[0],
-      compact: true,
-      maxCardBacks: 3,
+      pos: layout.pos,
+      scale: layout.nodeScale,
+      centerCoord: layout.centerCoord,
+      compact: layout.compact,
+      maxCardBacks: layout.maxCardBacks,
+      avatarSize: layout.avatarSize,
+      nameFontSize: layout.nameFontSize,
+      cardCountFontSize: layout.cardCountFontSize,
     };
   }, []);
 
@@ -1210,8 +1038,14 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
 
       if (nextPlayer.controller === 'LOCAL_HUMAN') {
         if (isPassAndPlay) {
-          setHandoffTarget(nextPlayer);
-          setActionLock('PASS_DEVICE');
+          if (fromPlayer && nextPlayer.id === fromPlayer.id && playedCard?.value === 'SKIP_EVERYONE') {
+            setActionLock('IDLE');
+            showToast('SKIP EVERYONE!', `${nextPlayer.name} takes another turn!`, 'success');
+            NativeEffectsService.triggerTurnChange();
+          } else {
+            setHandoffTarget(nextPlayer);
+            setActionLock('PASS_DEVICE');
+          }
         } else {
           setActionLock('IDLE');
           NativeEffectsService.triggerTurnChange();
@@ -1223,7 +1057,7 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
         setActionLock('WAITING_FOR_REMOTE_PLAYER');
       }
     },
-    [isPassAndPlay, runBotTurn, actionLock]
+    [isPassAndPlay, runBotTurn, actionLock, showToast]
   );
 
   advanceTurnRef.current = advanceToNextActivePlayer;
@@ -1402,9 +1236,13 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
       }
 
       // Special Card Trigger Checks
+      const curPlayer = allPlayersRef.current[currentPlayerIndexRef.current];
+      const curName = curPlayer?.name || 'Player';
+
       if (card.value === 'CUSTOM_WILD') {
         setSelectedCardId(card.id);
         setPendingWildCard(card);
+        setCustomWildChooserName(curName);
         setCanChooseCustomWild(true);
         setCustomWildModalVisible(true);
         setActionLock('CHOOSING_CUSTOM_WILD_POWER');
@@ -1423,6 +1261,7 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
         // 7 Swap Hands (Mandatory in No Mercy)
         setSelectedCardId(card.id);
         setPendingWildCard(card);
+        setSwapChooserName(curName);
         setCanChooseSwap(true);
         setSwapModalVisible(true);
         setActionLock('CHOOSING_SWAP_TARGET');
@@ -1444,15 +1283,37 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
         // Color Roulette: Next active player becomes target
         setSelectedCardId(card.id);
         setPendingWildCard(card);
-        setCanChooseRoulette(true);
-        setRouletteModalVisible(true);
-        setActionLock('CHOOSING_ROULETTE_COLOR');
+        const targetIdx = UnoGameEngine.getNextActivePlayerIndex(
+          allPlayersRef.current,
+          currentPlayerIndexRef.current,
+          playDirectionRef.current,
+          1
+        );
+        const targetPlayer = allPlayersRef.current[targetIdx];
+        if (targetPlayer) {
+          setRouletteTargetName(targetPlayer.name);
+        }
+        if (targetPlayer?.controller === 'BOT') {
+          // Bot target picks color automatically
+          const colors: UnoColor[] = ['RED', 'YELLOW', 'GREEN', 'BLUE'];
+          const botColor = colors[Math.floor(Math.random() * colors.length)];
+          if (handleRouletteRef.current) {
+            handleRouletteRef.current(botColor);
+          }
+        } else if (targetPlayer?.controller === 'LOCAL_HUMAN') {
+          setCanChooseRoulette(true);
+          setRouletteModalVisible(true);
+          setActionLock('CHOOSING_ROULETTE_COLOR');
+        } else {
+          setActionLock('WAITING_FOR_REMOTE_PLAYER');
+        }
         return;
       }
 
       if (UnoDeckService.isWildCard(card)) {
         setSelectedCardId(card.id);
         setPendingWildCard(card);
+        setWildChooserName(curName);
         setCanChooseWild(true);
         setActionLock('CHOOSING_WILD_COLOR');
         return;
@@ -2008,6 +1869,7 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
     },
     [deck, discardPile, rules, showToast, session, advanceToNextActivePlayer, pendingWildCard]
   );
+  handleRouletteRef.current = handleRouletteColorSelected;
 
   // End Turn Action
   const handleEndTurn = useCallback(() => {
@@ -2050,9 +1912,9 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
 
   return (
     <GameplayViewport>
-      {/* Table Oval */}
+      {/* Table Oval with Circular Animated Direction Indicator */}
       <View style={styles.tableCenter}>
-        <NativeGameTable />
+        <NativeGameTable direction={playDirection} activeColor={activeColor} />
       </View>
 
       {/* Top HUD */}
@@ -2122,6 +1984,11 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
               player={op}
               isTurn={isOpTurn}
               scale={layout.scale}
+              avatarSize={layout.avatarSize}
+              nameFontSize={layout.nameFontSize}
+              cardCountFontSize={layout.cardCountFontSize}
+              compact={layout.compact}
+              maxCardBacks={layout.maxCardBacks}
             />
           </View>
         );
@@ -2136,6 +2003,8 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
           pendingDrawStack={pendingDrawStack}
           rules={rules}
           isMyTurn={isMyTurn}
+          playerName={isPassAndPlay ? activePlayer?.name : (session.getLocalPlayer()?.name || activePlayer?.name || 'Player')}
+          avatar={isPassAndPlay ? activePlayer?.avatar : (session.getLocalPlayer()?.avatar || activePlayer?.avatar || '👤')}
           selectedCardId={selectedCardId}
           onSelectCard={card => setSelectedCardId(card ? card.id : null)}
           onPlayCard={handlePlayCard}

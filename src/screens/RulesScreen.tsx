@@ -31,6 +31,7 @@ export const RulesScreen: React.FC<RulesScreenProps> = ({
       hapticsEnabled: true,
     }
   );
+  const [saveDefaultToast, setSaveDefaultToast] = useState<string | null>(null);
 
   useEffect(() => {
     if (initialRules) {
@@ -44,6 +45,18 @@ export const RulesScreen: React.FC<RulesScreenProps> = ({
     const updated = { ...currentRules, [key]: val };
     setCurrentRules(updated);
     onUpdateRules?.(updated);
+  };
+
+  const handleSaveAsDefault = async () => {
+    NativeEffectsService.triggerCardSelect();
+    try {
+      const { AppSettingsService } = require('../services/AppSettingsService');
+      await AppSettingsService.saveMatchAsDefault(currentRules);
+      setSaveDefaultToast('Match rules saved as personal defaults!');
+    } catch (_) {
+      setSaveDefaultToast('Saved as defaults.');
+    }
+    setTimeout(() => setSaveDefaultToast(null), 2400);
   };
 
   return (
@@ -255,6 +268,20 @@ export const RulesScreen: React.FC<RulesScreenProps> = ({
             </View>
           </View>
         </View>
+
+        {/* Save As Default Button (Host Only - Requirement 16) */}
+        {isHost && (
+          <View style={styles.saveDefaultSection}>
+            <Pressable style={styles.saveDefaultBtn} onPress={handleSaveAsDefault}>
+              <Text style={styles.saveDefaultBtnText}>★ SAVE AS DEFAULT</Text>
+            </Pressable>
+            {saveDefaultToast && (
+              <View style={styles.saveDefaultToast}>
+                <Text style={styles.saveDefaultToastText}>{saveDefaultToast}</Text>
+              </View>
+            )}
+          </View>
+        )}
       </ScrollView>
     </View>
   );
@@ -410,5 +437,37 @@ const styles = StyleSheet.create({
   },
   modeOptionTextWrap: {
     flex: 1,
+  },
+  saveDefaultSection: {
+    marginTop: 8,
+    gap: 8,
+  },
+  saveDefaultBtn: {
+    backgroundColor: 'rgba(245, 158, 11, 0.18)',
+    borderWidth: 1.5,
+    borderColor: COLORS.goldGlow,
+    borderRadius: 16,
+    paddingVertical: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  saveDefaultBtnText: {
+    color: COLORS.goldGlow,
+    fontWeight: '900',
+    fontSize: 14,
+    letterSpacing: 1.2,
+  },
+  saveDefaultToast: {
+    backgroundColor: 'rgba(34, 197, 94, 0.2)',
+    borderColor: COLORS.unoGreen,
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 8,
+    alignItems: 'center',
+  },
+  saveDefaultToastText: {
+    color: '#4ADE80',
+    fontSize: 12,
+    fontWeight: '700',
   },
 });

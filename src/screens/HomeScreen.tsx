@@ -1,8 +1,10 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { StyleSheet, View, Text, Pressable, ScrollView } from 'react-native';
 import { COLORS } from '../constants/theme';
 import { GameMode } from '../types/game';
 import { NativeEffectsService } from '../services/NativeEffects';
+import { PlayerIdentityService, UserProfile } from '../services/PlayerIdentityService';
+import { ProfileModal } from '../components/modals/ProfileModal';
 
 interface HomeScreenProps {
   onSelectMode: (mode: GameMode) => void;
@@ -10,6 +12,15 @@ interface HomeScreenProps {
 }
 
 export const HomeScreen: React.FC<HomeScreenProps> = ({ onSelectMode, onOpenSettings }) => {
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [isProfileModalOpen, setIsProfileModalOpen] = useState<boolean>(false);
+
+  useEffect(() => {
+    PlayerIdentityService.init().then(p => setProfile(p));
+    const unsub = PlayerIdentityService.subscribe(p => setProfile(p));
+    return unsub;
+  }, []);
+
   const modes: { id: GameMode; title: string; subtitle: string; icon: string; color: string }[] = [
     { id: 'ONLINE', title: 'ONLINE', subtitle: 'Play with friends worldwide', icon: '🌐', color: COLORS.unoRed },
     { id: 'WLAN', title: 'WLAN', subtitle: 'Play on local network', icon: '📡', color: COLORS.unoBlue },
@@ -19,18 +30,31 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onSelectMode, onOpenSett
 
   return (
     <View style={styles.container}>
-      {/* User Status Bar */}
+      {/* User Status Bar - Clickable to open Profile */}
       <View style={styles.header}>
-        <View style={styles.userProfile}>
+        <Pressable
+          style={styles.userProfile}
+          onPress={() => {
+            NativeEffectsService.triggerCardSelect();
+            setIsProfileModalOpen(true);
+          }}
+        >
           <View style={styles.avatarCircle}>
-            <Text style={styles.avatarEmoji}>👦🏻</Text>
-            <View style={styles.onlineDot} />
+            <Text style={styles.avatarEmoji}>{profile?.avatar || '👦🏻'}</Text>
+            <View
+              style={[
+                styles.onlineDot,
+                { backgroundColor: profile?.isGuest ? COLORS.unoYellow : COLORS.unoGreen },
+              ]}
+            />
           </View>
           <View>
-            <Text style={styles.username}>VARUN</Text>
-            <Text style={styles.onlineStatus}>● Online</Text>
+            <Text style={styles.username}>{profile?.displayName || 'PLAYER'}</Text>
+            <Text style={styles.onlineStatus}>
+              {profile?.isGuest ? '● Guest Account' : '● Online (Google)'}
+            </Text>
           </View>
-        </View>
+        </Pressable>
 
         <Pressable
           onPress={() => {
@@ -71,6 +95,12 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onSelectMode, onOpenSett
           </Pressable>
         ))}
       </ScrollView>
+
+      {/* Profile Edit Modal */}
+      <ProfileModal
+        visible={isProfileModalOpen}
+        onClose={() => setIsProfileModalOpen(false)}
+      />
     </View>
   );
 };
@@ -114,7 +144,6 @@ const styles = StyleSheet.create({
     width: 12,
     height: 12,
     borderRadius: 6,
-    backgroundColor: COLORS.unoGreen,
     borderWidth: 2,
     borderColor: '#000',
   },

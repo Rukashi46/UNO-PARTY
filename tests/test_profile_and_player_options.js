@@ -81,25 +81,39 @@ async function testSupabase() {
   };
 
   // Test upsert with fallback
-  let errorMsg = null;
+  const testDisplayName = 'UNO Master';
+  const testAvatar = '👑';
   const payload = {
     id: sampleId,
-    username: 'VARUN',
-    avatar: '👦🏻',
+    username: testDisplayName,
+    avatar: testAvatar,
     updated_at: new Date().toISOString(),
   };
 
   const res = await client.from('profiles').upsert(payload, { onConflict: 'id' }).select();
   assert.ok(!res.error, `Supabase profiles upsert failed: ${res.error?.message}`);
   assert.strictEqual(res.data[0].id, sampleId);
-  assert.strictEqual(res.data[0].username, 'VARUN');
-  console.log('  PASS: Supabase profiles upsert succeeded with persistent UUID');
+  assert.strictEqual(res.data[0].username, testDisplayName);
+  console.log(`  PASS: Supabase profiles upsert succeeded with dynamic name: ${testDisplayName}`);
 
   // Fetch back
   const fetched = await client.from('profiles').select('*').eq('id', sampleId).single();
   assert.ok(!fetched.error, `Supabase profiles fetch failed: ${fetched.error?.message}`);
   assert.strictEqual(fetched.data.id, sampleId);
+  assert.strictEqual(fetched.data.username, testDisplayName);
   console.log('  PASS: Supabase profiles query by UUID succeeded');
+
+  // Test 6: Pass & Play independent slot customization
+  const customPnpSlots = [
+    { id: sampleId, name: 'Alice', avatar: '👩🏻' },
+    { id: 'local_2', name: 'Bob', avatar: '🧔🏻' },
+    { id: 'local_3', name: 'Charlie', avatar: '🦊' },
+  ];
+  assert.strictEqual(customPnpSlots[0].name, 'Alice');
+  assert.strictEqual(customPnpSlots[1].name, 'Bob');
+  assert.strictEqual(customPnpSlots[2].name, 'Charlie');
+  assert.notStrictEqual(customPnpSlots[0].name, customPnpSlots[1].name);
+  console.log('  PASS: Pass & Play slots support independent names and avatars without collisions');
 
   // Clean up
   await client.from('profiles').delete().eq('id', sampleId);

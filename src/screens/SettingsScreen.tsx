@@ -1,31 +1,41 @@
 import React, { useEffect, useState } from 'react';
 import { StyleSheet, View, Text, Pressable, ScrollView, Switch } from 'react-native';
 import { COLORS } from '../constants/theme';
-import { AppSettings, AppSettingsService } from '../services/AppSettingsService';
+import { UserSettings, AppSettingsService } from '../services/AppSettingsService';
 import { NativeEffectsService } from '../services/NativeEffects';
-import { PlayerIdentityService, PlayerIdentity } from '../services/PlayerIdentityService';
+import { PlayerIdentityService, UserProfile } from '../services/PlayerIdentityService';
 import { isSupabaseConfigured } from '../multiplayer/SupabaseClient';
+import { ProfileModal } from '../components/modals/ProfileModal';
 
 interface SettingsScreenProps {
   onBack: () => void;
 }
 
 export const SettingsScreen: React.FC<SettingsScreenProps> = ({ onBack }) => {
-  const [settings, setSettings] = useState<AppSettings>(AppSettingsService.getSettings());
-  const [identity, setIdentity] = useState<PlayerIdentity | null>(null);
+  const [settings, setSettings] = useState<UserSettings>(AppSettingsService.getSettings());
+  const [profile, setProfile] = useState<UserProfile | null>(null);
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const [syncToast, setSyncToast] = useState<string | null>(null);
+  const [isProfileModalOpen, setIsProfileModalOpen] = useState<boolean>(false);
 
   useEffect(() => {
     AppSettingsService.init().then(s => setSettings(s));
-    PlayerIdentityService.getIdentity().then(id => setIdentity(id));
-    const unsubscribe = AppSettingsService.subscribe(newSettings => {
+    PlayerIdentityService.getProfile().then(p => setProfile(p));
+
+    const unsubSettings = AppSettingsService.subscribe(newSettings => {
       setSettings(newSettings);
     });
-    return unsubscribe;
+    const unsubProfile = PlayerIdentityService.subscribe(newProfile => {
+      setProfile(newProfile);
+    });
+
+    return () => {
+      unsubSettings();
+      unsubProfile();
+    };
   }, []);
 
-  const handleToggle = (key: keyof AppSettings, val: boolean) => {
+  const handleToggle = (key: keyof UserSettings, val: boolean) => {
     NativeEffectsService.triggerCardSelect();
     AppSettingsService.updateSetting(key, val);
   };
@@ -65,27 +75,31 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ onBack }) => {
       </View>
 
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-        {/* Section 0: User Profile & Supabase Cloud */}
+        {/* Section 0: Account & Profile */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>USER PROFILE & SUPABASE CLOUD</Text>
+          <Text style={styles.sectionTitle}>ACCOUNT & PROFILE</Text>
           <View style={styles.cardPanel}>
             <View style={styles.profileRow}>
               <View style={styles.profileAvatarBox}>
-                <Text style={styles.profileAvatarText}>{identity?.avatar || '👦🏻'}</Text>
+                <Text style={styles.profileAvatarText}>{profile?.avatar || '👦🏻'}</Text>
               </View>
               <View style={styles.profileInfo}>
-                <Text style={styles.profileName}>{identity?.name || 'VARUN'}</Text>
-                <Text style={styles.profileIdLabel}>UNIQUE USER ID (UUID)</Text>
+                <Text style={styles.profileName}>{profile?.displayName || 'PLAYER'}</Text>
+                <Text style={styles.profileIdLabel}>
+                  {profile?.isGuest ? 'GUEST ACCOUNT (LOCAL UUID)' : `GOOGLE ACCOUNT (${profile?.email || 'ONLINE'})`}
+                </Text>
                 <Text style={styles.profileIdText} numberOfLines={1} ellipsizeMode="middle">
-                  {identity?.id || 'Loading ID...'}
+                  {profile?.id || 'Loading...'}
                 </Text>
               </View>
               <Pressable
-                style={[styles.syncBtn, isSyncing && styles.syncBtnDisabled]}
-                disabled={isSyncing}
-                onPress={handleManualSync}
+                style={styles.editProfileBtn}
+                onPress={() => {
+                  NativeEffectsService.triggerCardSelect();
+                  setIsProfileModalOpen(true);
+                }}
               >
-                <Text style={styles.syncBtnText}>{isSyncing ? 'SYNCING...' : 'SYNC NOW'}</Text>
+                <Text style={styles.editProfileText}>EDIT</Text>
               </Pressable>
             </View>
 
@@ -100,9 +114,16 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ onBack }) => {
               />
               <Text style={styles.cloudStatusText}>
                 {isCloudConnected
-                  ? 'Supabase profiles table: User ID and settings synchronized'
-                  : 'Local Storage Active: Offline fallback mode enabled'}
+                  ? 'Cloud Sync: Supabase profiles & user_settings active'
+                  : 'Offline-First: Local persistence active'}
               </Text>
+              <Pressable
+                style={[styles.syncBtn, isSyncing && styles.syncBtnDisabled]}
+                disabled={isSyncing}
+                onPress={handleManualSync}
+              >
+                <Text style={styles.syncBtnText}>{isSyncing ? 'SYNCING...' : 'SYNC'}</Text>
+              </Pressable>
             </View>
 
             {syncToast && (
@@ -113,9 +134,9 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ onBack }) => {
           </View>
         </View>
 
-        {/* Section 1: App Experience */}
+        {/* Section 1: Audio */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>APP EXPERIENCE</Text>
+          <Text style={styles.sectionTitle}>AUDIO</Text>
           <View style={styles.cardPanel}>
             {/* Sound Effects */}
             <View style={styles.row}>
@@ -138,36 +159,15 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ onBack }) => {
 
             <View style={styles.divider} />
 
-            {/* Music */}
-            <View style={styles.row}>
-              <View style={styles.rowLeft}>
-                <View style={[styles.iconWrap, { backgroundColor: 'rgba(254, 219, 0, 0.15)' }]}>
-                  <Text style={styles.rowIcon}>🎵</Text>
-                </View>
-                <View style={styles.textWrap}>
-                  <Text style={styles.rowLabel}>Music</Text>
-                  <Text style={styles.rowDesc}>Background ambient music in menu & match</Text>
-                </View>
-              </View>
-              <Switch
-                value={settings.musicEnabled}
-                onValueChange={v => handleToggle('musicEnabled', v)}
-                trackColor={{ true: COLORS.unoGreen, false: '#334155' }}
-                thumbColor="#FFFFFF"
-              />
-            </View>
-
-            <View style={styles.divider} />
-
             {/* Haptics */}
             <View style={styles.row}>
               <View style={styles.rowLeft}>
-                <View style={[styles.iconWrap, { backgroundColor: 'rgba(0, 166, 81, 0.15)' }]}>
+                <View style={[styles.iconWrap, { backgroundColor: 'rgba(16, 185, 129, 0.15)' }]}>
                   <Text style={styles.rowIcon}>📳</Text>
                 </View>
                 <View style={styles.textWrap}>
                   <Text style={styles.rowLabel}>Haptic Feedback</Text>
-                  <Text style={styles.rowDesc}>Tactile vibration pulses on taps and turns</Text>
+                  <Text style={styles.rowDesc}>Vibration on turn change, draw, UNO call</Text>
                 </View>
               </View>
               <Switch
@@ -187,12 +187,12 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ onBack }) => {
             {/* Animations */}
             <View style={styles.row}>
               <View style={styles.rowLeft}>
-                <View style={[styles.iconWrap, { backgroundColor: 'rgba(0, 133, 200, 0.15)' }]}>
+                <View style={[styles.iconWrap, { backgroundColor: 'rgba(59, 130, 246, 0.15)' }]}>
                   <Text style={styles.rowIcon}>✨</Text>
                 </View>
                 <View style={styles.textWrap}>
                   <Text style={styles.rowLabel}>Card Animations</Text>
-                  <Text style={styles.rowDesc}>Physics flight trajectories and shockwaves</Text>
+                  <Text style={styles.rowDesc}>Smooth card flight & shuffle sequences</Text>
                 </View>
               </View>
               <Switch
@@ -202,129 +202,163 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ onBack }) => {
                 thumbColor="#FFFFFF"
               />
             </View>
+          </View>
+        </View>
 
-            <View style={styles.divider} />
-
-            {/* Card Confirmation */}
+        {/* Section 3: User Default Match Rules */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>MATCH DEFAULTS (YOUR PREFERENCES)</Text>
+          <View style={styles.cardPanel}>
+            {/* Default Deck */}
             <View style={styles.row}>
               <View style={styles.rowLeft}>
-                <View style={[styles.iconWrap, { backgroundColor: 'rgba(245, 158, 11, 0.15)' }]}>
-                  <Text style={styles.rowIcon}>👆</Text>
+                <View style={[styles.iconWrap, { backgroundColor: 'rgba(234, 179, 8, 0.15)' }]}>
+                  <Text style={styles.rowIcon}>🃏</Text>
                 </View>
                 <View style={styles.textWrap}>
-                  <Text style={styles.rowLabel}>Card Confirmation</Text>
-                  <Text style={styles.rowDesc}>Two-tap play: Tap 1 to select, Tap 2 to play</Text>
+                  <Text style={styles.rowLabel}>Default Deck</Text>
+                  <Text style={styles.rowDesc}>{settings.defaultDeck === 'NO_MERCY' ? 'UNO No Mercy (168 Cards)' : 'Modern UNO (112 Cards)'}</Text>
                 </View>
               </View>
-              <Switch
-                value={settings.cardConfirmation}
-                onValueChange={v => handleToggle('cardConfirmation', v)}
-                trackColor={{ true: COLORS.unoGreen, false: '#334155' }}
-                thumbColor="#FFFFFF"
-              />
+              <Pressable
+                style={styles.pickerPill}
+                onPress={() => {
+                  NativeEffectsService.triggerCardSelect();
+                  const nextDeck = settings.defaultDeck === 'NORMAL' ? 'NO_MERCY' : 'NORMAL';
+                  AppSettingsService.updateSetting('defaultDeck', nextDeck);
+                }}
+              >
+                <Text style={styles.pickerPillText}>{settings.defaultDeck === 'NORMAL' ? 'MODERN' : 'NO MERCY'}</Text>
+              </Pressable>
             </View>
 
             <View style={styles.divider} />
 
-            {/* Turn Notifications */}
+            {/* Default Game End Mode */}
             <View style={styles.row}>
               <View style={styles.rowLeft}>
                 <View style={[styles.iconWrap, { backgroundColor: 'rgba(168, 85, 247, 0.15)' }]}>
-                  <Text style={styles.rowIcon}>🔔</Text>
+                  <Text style={styles.rowIcon}>🏁</Text>
                 </View>
                 <View style={styles.textWrap}>
-                  <Text style={styles.rowLabel}>Show Turn Notifications</Text>
-                  <Text style={styles.rowDesc}>Alert banners when it becomes your turn</Text>
+                  <Text style={styles.rowLabel}>Default Game End</Text>
+                  <Text style={styles.rowDesc}>
+                    {settings.defaultGameEndMode === 'FIRST_PLAYER_WINS' ? 'First Player Wins' : 'Play Until Last Player'}
+                  </Text>
+                </View>
+              </View>
+              <Pressable
+                style={styles.pickerPill}
+                onPress={() => {
+                  NativeEffectsService.triggerCardSelect();
+                  const next = settings.defaultGameEndMode === 'FIRST_PLAYER_WINS' ? 'PLAY_UNTIL_LAST_PLAYER' : 'FIRST_PLAYER_WINS';
+                  AppSettingsService.updateSetting('defaultGameEndMode', next);
+                }}
+              >
+                <Text style={styles.pickerPillText}>
+                  {settings.defaultGameEndMode === 'FIRST_PLAYER_WINS' ? 'FIRST WINS' : 'UNTIL LAST'}
+                </Text>
+              </Pressable>
+            </View>
+
+            <View style={styles.divider} />
+
+            {/* Stacking */}
+            <View style={styles.row}>
+              <View style={styles.rowLeft}>
+                <View style={styles.textWrap}>
+                  <Text style={styles.rowLabel}>Default Stacking</Text>
+                  <Text style={styles.rowDesc}>Stack +2, +4, +6, +10 penalties</Text>
                 </View>
               </View>
               <Switch
-                value={settings.turnNotifications}
-                onValueChange={v => handleToggle('turnNotifications', v)}
+                value={settings.defaultStackingEnabled}
+                onValueChange={v => handleToggle('defaultStackingEnabled', v)}
                 trackColor={{ true: COLORS.unoGreen, false: '#334155' }}
                 thumbColor="#FFFFFF"
               />
             </View>
-          </View>
-        </View>
-
-        {/* Section 3: Appearance */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>APPEARANCE</Text>
-          <View style={styles.cardPanel}>
-            <Pressable style={styles.navRow}>
-              <View style={styles.rowLeft}>
-                <View style={[styles.iconWrap, { backgroundColor: 'rgba(234, 29, 36, 0.15)' }]}>
-                  <Text style={styles.rowIcon}>🎨</Text>
-                </View>
-                <View style={styles.textWrap}>
-                  <Text style={styles.rowLabel}>Theme</Text>
-                  <Text style={styles.rowDesc}>Visual board & table style</Text>
-                </View>
-              </View>
-              <View style={styles.navRight}>
-                <Text style={styles.valueText}>{settings.theme}</Text>
-                <Text style={styles.chevron}>›</Text>
-              </View>
-            </Pressable>
-          </View>
-        </View>
-
-        {/* Section 4: Language */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>LANGUAGE</Text>
-          <View style={styles.cardPanel}>
-            <Pressable style={styles.navRow}>
-              <View style={styles.rowLeft}>
-                <View style={[styles.iconWrap, { backgroundColor: 'rgba(0, 133, 200, 0.15)' }]}>
-                  <Text style={styles.rowIcon}>🌐</Text>
-                </View>
-                <View style={styles.textWrap}>
-                  <Text style={styles.rowLabel}>Language</Text>
-                  <Text style={styles.rowDesc}>Interface and card text language</Text>
-                </View>
-              </View>
-              <View style={styles.navRight}>
-                <Text style={styles.valueText}>{settings.language}</Text>
-                <Text style={styles.chevron}>›</Text>
-              </View>
-            </Pressable>
-          </View>
-        </View>
-
-        {/* Section 5: About */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>ABOUT</Text>
-          <View style={styles.cardPanel}>
-            <Pressable style={styles.navRow}>
-              <View style={styles.rowLeft}>
-                <View style={[styles.iconWrap, { backgroundColor: 'rgba(254, 219, 0, 0.15)' }]}>
-                  <Text style={styles.rowIcon}>ℹ️</Text>
-                </View>
-                <View style={styles.textWrap}>
-                  <Text style={styles.rowLabel}>About UNO PARTY</Text>
-                  <Text style={styles.rowDesc}>Classic Party Card Game Native Edition</Text>
-                </View>
-              </View>
-              <Text style={styles.chevron}>›</Text>
-            </Pressable>
 
             <View style={styles.divider} />
 
-            <View style={styles.navRow}>
+            {/* 7-0 Rule */}
+            <View style={styles.row}>
               <View style={styles.rowLeft}>
-                <View style={[styles.iconWrap, { backgroundColor: 'rgba(255, 255, 255, 0.08)' }]}>
-                  <Text style={styles.rowIcon}>📱</Text>
-                </View>
                 <View style={styles.textWrap}>
-                  <Text style={styles.rowLabel}>Version</Text>
-                  <Text style={styles.rowDesc}>Production Release</Text>
+                  <Text style={styles.rowLabel}>Default 7-0 Rule</Text>
+                  <Text style={styles.rowDesc}>7 swaps hands, 0 passes all hands</Text>
                 </View>
               </View>
-              <Text style={styles.valueText}>v1.0.0 (Native)</Text>
+              <Switch
+                value={settings.defaultSevenZeroEnabled}
+                onValueChange={v => handleToggle('defaultSevenZeroEnabled', v)}
+                trackColor={{ true: COLORS.unoGreen, false: '#334155' }}
+                thumbColor="#FFFFFF"
+              />
+            </View>
+
+            <View style={styles.divider} />
+
+            {/* Jump-In */}
+            <View style={styles.row}>
+              <View style={styles.rowLeft}>
+                <View style={styles.textWrap}>
+                  <Text style={styles.rowLabel}>Default Jump-In</Text>
+                  <Text style={styles.rowDesc}>Play exact matching card out of turn</Text>
+                </View>
+              </View>
+              <Switch
+                value={settings.defaultJumpInEnabled}
+                onValueChange={v => handleToggle('defaultJumpInEnabled', v)}
+                trackColor={{ true: COLORS.unoGreen, false: '#334155' }}
+                thumbColor="#FFFFFF"
+              />
+            </View>
+
+            <View style={styles.divider} />
+
+            {/* Draw Until Playable */}
+            <View style={styles.row}>
+              <View style={styles.rowLeft}>
+                <View style={styles.textWrap}>
+                  <Text style={styles.rowLabel}>Draw Until Playable</Text>
+                  <Text style={styles.rowDesc}>Keep drawing cards until a playable card is drawn</Text>
+                </View>
+              </View>
+              <Switch
+                value={settings.defaultDrawUntilPlayable}
+                onValueChange={v => handleToggle('defaultDrawUntilPlayable', v)}
+                trackColor={{ true: COLORS.unoGreen, false: '#334155' }}
+                thumbColor="#FFFFFF"
+              />
+            </View>
+
+            <View style={styles.divider} />
+
+            {/* Force Play */}
+            <View style={styles.row}>
+              <View style={styles.rowLeft}>
+                <View style={styles.textWrap}>
+                  <Text style={styles.rowLabel}>Force Play</Text>
+                  <Text style={styles.rowDesc}>Automatically play playable cards upon drawing</Text>
+                </View>
+              </View>
+              <Switch
+                value={settings.defaultForcePlay}
+                onValueChange={v => handleToggle('defaultForcePlay', v)}
+                trackColor={{ true: COLORS.unoGreen, false: '#334155' }}
+                thumbColor="#FFFFFF"
+              />
             </View>
           </View>
         </View>
       </ScrollView>
+
+      {/* Profile Modal */}
+      <ProfileModal
+        visible={isProfileModalOpen}
+        onClose={() => setIsProfileModalOpen(false)}
+      />
     </View>
   );
 };
@@ -333,208 +367,121 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#040507',
-    paddingHorizontal: 20,
-    paddingTop: 50,
   },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingTop: 16,
     paddingBottom: 16,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.1)',
+    borderBottomColor: 'rgba(255, 255, 255, 0.08)',
   },
   backBtn: {
     width: 40,
     height: 40,
-    borderRadius: 14,
-    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+    borderRadius: 20,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.15)',
   },
   backArrow: {
-    color: '#FFFFFF',
+    color: '#FFF',
     fontSize: 28,
     fontWeight: '300',
-    lineHeight: 32,
+    marginTop: -2,
   },
   title: {
-    color: '#FFFFFF',
-    fontSize: 20,
+    color: '#FFF',
+    fontSize: 18,
     fontWeight: '900',
-    letterSpacing: 2,
+    letterSpacing: 1.5,
   },
   headerSpacer: {
     width: 40,
   },
   scrollContent: {
-    paddingTop: 20,
+    padding: 20,
+    gap: 24,
     paddingBottom: 40,
-    gap: 22,
   },
   section: {
-    gap: 8,
+    gap: 10,
   },
   sectionTitle: {
     color: '#94A3B8',
     fontSize: 12,
     fontWeight: '800',
     letterSpacing: 1.5,
-    textTransform: 'uppercase',
-    paddingHorizontal: 4,
   },
   cardPanel: {
-    backgroundColor: 'rgba(20, 16, 28, 0.85)',
+    backgroundColor: 'rgba(23, 27, 38, 0.85)',
     borderRadius: 20,
     borderWidth: 1.5,
     borderColor: 'rgba(255, 255, 255, 0.1)',
-    overflow: 'hidden',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.5,
-    shadowRadius: 10,
-    elevation: 4,
-  },
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 14,
     paddingHorizontal: 16,
-  },
-  navRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 14,
-    paddingHorizontal: 16,
-  },
-  rowLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 14,
-    flex: 1,
-    paddingRight: 12,
-  },
-  iconWrap: {
-    width: 38,
-    height: 38,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-  },
-  rowIcon: {
-    fontSize: 18,
-  },
-  textWrap: {
-    flex: 1,
-  },
-  rowLabel: {
-    color: '#FFFFFF',
-    fontSize: 15,
-    fontWeight: '800',
-    letterSpacing: 0.3,
-  },
-  rowDesc: {
-    color: '#94A3B8',
-    fontSize: 12,
-    fontWeight: '500',
-    marginTop: 2,
-  },
-  navRight: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  valueText: {
-    color: COLORS.goldGlow,
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  chevron: {
-    color: '#64748B',
-    fontSize: 20,
-    fontWeight: '300',
-  },
-  divider: {
-    height: 1,
-    backgroundColor: 'rgba(255, 255, 255, 0.06)',
-    marginLeft: 68,
-  },
-  dividerProfile: {
-    height: 1,
-    backgroundColor: 'rgba(255, 255, 255, 0.06)',
-    marginHorizontal: 16,
+    paddingVertical: 8,
   },
   profileRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 14,
-    paddingHorizontal: 16,
+    paddingVertical: 12,
     gap: 12,
   },
   profileAvatarBox: {
-    width: 48,
-    height: 48,
-    borderRadius: 16,
-    backgroundColor: 'rgba(245, 158, 11, 0.15)',
-    borderWidth: 1.5,
-    borderColor: 'rgba(245, 158, 11, 0.3)',
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: '#1E293B',
+    borderWidth: 2,
+    borderColor: COLORS.goldGlow,
     alignItems: 'center',
     justifyContent: 'center',
   },
   profileAvatarText: {
-    fontSize: 24,
+    fontSize: 26,
   },
   profileInfo: {
     flex: 1,
   },
   profileName: {
-    color: '#FFFFFF',
+    color: '#FFF',
     fontSize: 16,
     fontWeight: '900',
-    letterSpacing: 0.5,
   },
   profileIdLabel: {
-    color: '#94A3B8',
-    fontSize: 9,
-    fontWeight: '800',
-    letterSpacing: 0.8,
+    color: COLORS.emeraldGlow,
+    fontSize: 10,
+    fontWeight: '700',
     marginTop: 2,
   },
   profileIdText: {
-    color: COLORS.goldGlow,
-    fontSize: 11,
+    color: '#64748B',
+    fontSize: 10,
     fontFamily: 'monospace',
-    fontWeight: '600',
     marginTop: 1,
   },
-  syncBtn: {
-    backgroundColor: 'rgba(245, 158, 11, 0.2)',
-    borderWidth: 1.5,
-    borderColor: COLORS.goldGlow,
-    borderRadius: 12,
+  editProfileBtn: {
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    paddingHorizontal: 14,
     paddingVertical: 8,
-    paddingHorizontal: 12,
+    borderRadius: 12,
   },
-  syncBtnDisabled: {
-    opacity: 0.5,
+  editProfileText: {
+    color: '#FFF',
+    fontSize: 12,
+    fontWeight: '800',
   },
-  syncBtnText: {
-    color: COLORS.goldGlow,
-    fontSize: 11,
-    fontWeight: '900',
-    letterSpacing: 0.5,
+  dividerProfile: {
+    height: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    marginVertical: 4,
   },
   cloudStatusRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 10,
-    paddingHorizontal: 16,
+    paddingVertical: 8,
     gap: 8,
   },
   statusDot: {
@@ -548,18 +495,88 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     flex: 1,
   },
-  syncToastBox: {
+  syncBtn: {
     backgroundColor: 'rgba(34, 197, 94, 0.15)',
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(34, 197, 94, 0.3)',
-    paddingVertical: 8,
-    paddingHorizontal: 16,
+    borderWidth: 1,
+    borderColor: COLORS.unoGreen,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 10,
+  },
+  syncBtnDisabled: {
+    opacity: 0.5,
+  },
+  syncBtnText: {
+    color: COLORS.unoGreen,
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  syncToastBox: {
+    backgroundColor: 'rgba(34, 197, 94, 0.18)',
+    borderRadius: 8,
+    padding: 8,
     alignItems: 'center',
+    marginTop: 6,
+    marginBottom: 4,
   },
   syncToastText: {
     color: '#4ADE80',
     fontSize: 12,
+    fontWeight: '700',
+  },
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 14,
+  },
+  rowLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    flex: 1,
+    paddingRight: 10,
+  },
+  iconWrap: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  rowIcon: {
+    fontSize: 18,
+  },
+  textWrap: {
+    flex: 1,
+  },
+  rowLabel: {
+    color: '#FFFFFF',
+    fontSize: 15,
     fontWeight: '800',
-    letterSpacing: 0.3,
+  },
+  rowDesc: {
+    color: COLORS.textMuted,
+    fontSize: 12,
+    fontWeight: '600',
+    marginTop: 2,
+  },
+  divider: {
+    height: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+  },
+  pickerPill: {
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.15)',
+  },
+  pickerPillText: {
+    color: '#FFFFFF',
+    fontWeight: '900',
+    fontSize: 12,
+    letterSpacing: 0.5,
   },
 });

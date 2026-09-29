@@ -1,8 +1,17 @@
 import React from 'react';
 import { StyleSheet, View, Text } from 'react-native';
 import { COLORS } from '../../constants/theme';
+import { DirectionIndicatorRing } from './DirectionIndicatorRing';
 
-export const NativeGameTable: React.FC = () => {
+interface GameTableProps {
+  direction?: 'CW' | 'CCW';
+  activeColor?: string;
+}
+
+export const NativeGameTable: React.FC<GameTableProps> = ({
+  direction = 'CW',
+  activeColor,
+}) => {
   return (
     <View style={styles.tableFelt}>
       {/* Outer Glow Ring */}
@@ -10,6 +19,9 @@ export const NativeGameTable: React.FC = () => {
 
       {/* Debossed Center Watermark */}
       <Text style={styles.debossedLogo}>UNO</Text>
+
+      {/* Authoritative Permanent Direction-of-Play Indicator Ring (Requirement 53-56) */}
+      <DirectionIndicatorRing direction={direction} activeColor={activeColor} />
     </View>
   );
 };

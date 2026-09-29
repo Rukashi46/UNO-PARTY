@@ -13,6 +13,8 @@ interface PlayerHandFanProps {
   pendingDrawStack: number;
   rules: GameRules;
   isMyTurn: boolean;
+  playerName?: string;
+  avatar?: string;
   selectedCardId?: string | null;
   onSelectCard?: (card: UnoCard | null) => void;
   onPlayCard: (card: UnoCard) => void;
@@ -27,6 +29,8 @@ export const NativePlayerHandFan: React.FC<PlayerHandFanProps> = ({
   pendingDrawStack,
   rules,
   isMyTurn,
+  playerName = 'YOU',
+  avatar = '👦🏻',
   selectedCardId: externalSelectedId,
   onSelectCard,
   onPlayCard,
@@ -121,14 +125,14 @@ export const NativePlayerHandFan: React.FC<PlayerHandFanProps> = ({
       {/* Player Identity Pill */}
       <View style={[styles.identityPill, isMyTurn && styles.myTurnPill]}>
         <View style={styles.avatarWrap}>
-          <Text style={styles.avatarEmoji}>👦🏻</Text>
+          <Text style={styles.avatarEmoji}>{avatar}</Text>
           <View style={styles.onlineBadge}>
             <Text style={styles.checkText}>✓</Text>
           </View>
         </View>
         <View style={styles.nameBlock}>
           <Text style={styles.playerName}>
-            VARUN <Text style={styles.youTag}>(You)</Text>
+            {playerName} <Text style={styles.youTag}>({isMyTurn ? 'You' : 'Active'})</Text>
           </Text>
           <Text style={styles.handCount}>
             {hand.length} {hand.length === 1 ? 'card' : 'cards'}

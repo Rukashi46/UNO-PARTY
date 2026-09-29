@@ -345,6 +345,14 @@ export class MultiplayerSession {
     this.notifyState();
   }
 
+  updatePassAndPlayPlayer(playerId: string, name: string, avatar: string): void {
+    if (!this.room || this.mode !== 'PASS_AND_PLAY') return;
+    this.room.players = this.room.players.map(p =>
+      p.id === playerId ? { ...p, name: name.trim() || p.name, avatar: avatar || p.avatar } : p
+    );
+    this.notifyState();
+  }
+
   // Start Match (Host Only)
   async startMatch(): Promise<{ initialPublicState: PublicMatchState; privateHand: UnoCard[] }> {
     if (!this.isHost() || !this.room) {

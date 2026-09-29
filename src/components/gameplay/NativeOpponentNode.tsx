@@ -9,6 +9,9 @@ interface OpponentNodeProps {
   scale?: number;
   maxCardBacks?: number;
   compact?: boolean;
+  avatarSize?: number;
+  nameFontSize?: number;
+  cardCountFontSize?: number;
 }
 
 export const NativeOpponentNode: React.FC<OpponentNodeProps> = ({
@@ -17,6 +20,9 @@ export const NativeOpponentNode: React.FC<OpponentNodeProps> = ({
   scale = 1.0,
   maxCardBacks,
   compact = false,
+  avatarSize,
+  nameFontSize,
+  cardCountFontSize,
 }) => {
   const isFinished = player.status === 'FINISHED' || (player.hand && player.hand.length === 0 && player.cardCount === 0 && player.status !== 'ACTIVE' && player.finishRank !== undefined);
   const isEliminated = player.status === 'ELIMINATED' || player.isEliminated;
@@ -69,12 +75,13 @@ export const NativeOpponentNode: React.FC<OpponentNodeProps> = ({
           style={[
             styles.avatarCircle,
             compact && styles.avatarCircleCompact,
+            avatarSize ? { width: avatarSize, height: avatarSize, borderRadius: avatarSize / 2 } : null,
             isTurn && styles.avatarCircleTurn,
             isFinished && styles.avatarCircleFinished,
             isEliminated && styles.avatarCircleEliminated,
           ]}
         >
-          <Text style={[styles.avatarText, compact && styles.avatarTextCompact]}>{player.avatar}</Text>
+          <Text style={[styles.avatarText, compact && styles.avatarTextCompact, avatarSize ? { fontSize: avatarSize * 0.52 } : null]}>{player.avatar}</Text>
         </View>
 
         <View style={styles.textColumn}>
@@ -83,6 +90,7 @@ export const NativeOpponentNode: React.FC<OpponentNodeProps> = ({
               style={[
                 styles.nameText,
                 compact && styles.nameTextCompact,
+                nameFontSize ? { fontSize: nameFontSize } : null,
                 isFinished && styles.nameTextFinished,
                 isEliminated && styles.nameTextEliminated,
               ]}
@@ -107,6 +115,7 @@ export const NativeOpponentNode: React.FC<OpponentNodeProps> = ({
             style={[
               styles.cardCountText,
               compact && styles.cardCountTextCompact,
+              cardCountFontSize ? { fontSize: cardCountFontSize } : null,
               player.cardCount === 1 && !isFinished && !isEliminated && styles.unoCountText,
               isFinished && styles.finishedCountText,
               isEliminated && styles.eliminatedCountText,

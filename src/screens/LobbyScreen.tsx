@@ -15,6 +15,7 @@ import { NativeEffectsService } from '../services/NativeEffects';
 import { MultiplayerSession } from '../multiplayer/MultiplayerSession';
 import { MultiplayerRoom, RoomPlayer, ConnectionStatus, NearbyWlanRoom } from '../multiplayer/types';
 import { PlayerIdentityService } from '../services/PlayerIdentityService';
+import { AppSettingsService } from '../services/AppSettingsService';
 import { getSafeErrorMessage } from '../services/ErrorMapper';
 
 interface LobbyScreenProps {
@@ -40,6 +41,11 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
   const [isJoining, setIsJoining] = useState<boolean>(false);
   const [isStarting, setIsStarting] = useState<boolean>(false);
 
+  // Pass & Play Player Slot Editing State (Requirement 21)
+  const [editingPassPlayer, setEditingPassPlayer] = useState<RoomPlayer | null>(null);
+  const [passEditName, setPassEditName] = useState<string>('');
+  const [passEditAvatar, setPassEditAvatar] = useState<string>('👦🏻');
+
   // WLAN Nearby Rooms State
   const [nearbyRooms, setNearbyRooms] = useState<NearbyWlanRoom[]>([]);
   const [isScanningWlan, setIsScanningWlan] = useState<boolean>(false);
@@ -64,29 +70,32 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
 
   // Initialize Room & Presence
   const initLobby = useCallback(async () => {
-    const identity = await PlayerIdentityService.getIdentity();
+    const profile = await PlayerIdentityService.getProfile();
+    const userDefaults = AppSettingsService.getSettings();
+
     const player: RoomPlayer = {
-      id: identity.id,
-      name: identity.name,
-      avatar: identity.avatar,
+      id: profile.id,
+      name: profile.displayName,
+      avatar: profile.avatar,
       isHost: true,
       isReady: true,
       isConnected: true,
       cardCount: 7,
+      controller: 'LOCAL_HUMAN',
     };
 
     const rules: GameRules = {
-      deckType: 'NORMAL',
-      stacking: true,
-      sevenZeroRule: false,
-      jumpInRule: true,
-      drawUntilPlayable: false,
-      forcePlay: false,
-      mercy25Cards: false,
+      deckType: userDefaults.defaultDeck || 'NORMAL',
+      stacking: userDefaults.defaultStackingEnabled ?? true,
+      sevenZeroRule: userDefaults.defaultSevenZeroEnabled ?? (userDefaults.defaultDeck === 'NO_MERCY'),
+      jumpInRule: userDefaults.defaultJumpInEnabled ?? true,
+      drawUntilPlayable: userDefaults.defaultDrawUntilPlayable ?? false,
+      forcePlay: userDefaults.defaultForcePlay ?? false,
+      mercy25Cards: userDefaults.defaultDeck === 'NO_MERCY',
       includeCustomWilds: true,
-      soundEnabled: true,
-      hapticsEnabled: true,
-      gameEndMode: 'FIRST_PLAYER_WINS',
+      soundEnabled: userDefaults.soundEnabled ?? true,
+      hapticsEnabled: userDefaults.hapticsEnabled ?? true,
+      gameEndMode: userDefaults.defaultGameEndMode || 'FIRST_PLAYER_WINS',
     };
 
     if (mode === 'PLAY_BOTS' || mode === 'PASS_AND_PLAY') {
@@ -117,11 +126,13 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
         created.maxPlayers = 4;
       } else if (mode === 'PASS_AND_PLAY') {
         // Pass & Play: ALL PLAYERS ARE LOCAL_HUMAN (ZERO BOTS)
+        // Player 1 defaults to the device user's profile
         if (created.players[0]) {
-          created.players[0].name = created.players[0].name || 'Player 1';
+          created.players[0].name = profile.displayName || 'Player 1';
+          created.players[0].avatar = profile.avatar || '👦🏻';
           created.players[0].controller = 'LOCAL_HUMAN';
         }
-        const humanAvatars = ['🎮', '⭐', '🔥'];
+        const humanAvatars = ['🎮', '⭐', '🔥', '🎯'];
         for (let i = 2; i <= 3; i++) {
           created.players.push({
             id: `local_human_${i}`,
@@ -481,28 +492,49 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                   </View>
                   <View>
                     <Text style={styles.playerNameText}>
-                      {p.name} {p.id === localPlayer?.id ? '(You)' : ''}
+                      {p.name} {mode === 'PASS_AND_PLAY' ? `(Slot ${idx + 1})` : p.id === localPlayer?.id ? '(You)' : ''}
                     </Text>
-                    {p.isHost && <Text style={styles.hostTag}>Room Leader</Text>}
+                    {p.isHost && mode !== 'PASS_AND_PLAY' && <Text style={styles.hostTag}>Room Leader</Text>}
+                    {mode === 'PASS_AND_PLAY' && (
+                      <Text style={styles.passPlaySlotTag}>
+                        {idx === 0 ? 'Device Owner (Default)' : 'Pass Player'}
+                      </Text>
+                    )}
                   </View>
                 </View>
 
                 <View style={styles.playerRightStatus}>
-                  {p.isReady ? (
-                    <View style={styles.readyBadge}>
-                      <Text style={styles.readyBadgeText}>✓ READY</Text>
-                    </View>
+                  {mode === 'PASS_AND_PLAY' ? (
+                    <Pressable
+                      style={styles.slotEditBtn}
+                      onPress={() => {
+                        NativeEffectsService.triggerCardSelect();
+                        setEditingPassPlayer(p);
+                        setPassEditName(p.name);
+                        setPassEditAvatar(p.avatar);
+                      }}
+                    >
+                      <Text style={styles.slotEditText}>✎ EDIT</Text>
+                    </Pressable>
                   ) : (
-                    <View style={styles.waitingBadge}>
-                      <Text style={styles.waitingBadgeText}>WAITING</Text>
-                    </View>
+                    <>
+                      {p.isReady ? (
+                        <View style={styles.readyBadge}>
+                          <Text style={styles.readyBadgeText}>✓ READY</Text>
+                        </View>
+                      ) : (
+                        <View style={styles.waitingBadge}>
+                          <Text style={styles.waitingBadgeText}>WAITING</Text>
+                        </View>
+                      )}
+                      <View
+                        style={[
+                          styles.greenLight,
+                          !p.isConnected && { backgroundColor: COLORS.unoRed },
+                        ]}
+                      />
+                    </>
                   )}
-                  <View
-                    style={[
-                      styles.greenLight,
-                      !p.isConnected && { backgroundColor: COLORS.unoRed },
-                    ]}
-                  />
                 </View>
               </View>
             ))}
@@ -610,6 +642,71 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                 onPress={handleJoinByCode}
               >
                 <Text style={styles.modalJoinText}>JOIN</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Pass & Play Slot Edit Modal (Requirement 21) */}
+      <Modal
+        visible={editingPassPlayer !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setEditingPassPlayer(null)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>EDIT PLAYER SLOT</Text>
+            <Text style={styles.modalSubtitle}>Customize name and avatar for this Pass & Play player</Text>
+            <TextInput
+              style={styles.modalInput}
+              value={passEditName}
+              onChangeText={setPassEditName}
+              placeholder="Player Name"
+              placeholderTextColor="#64748B"
+              maxLength={20}
+              autoCorrect={false}
+            />
+            <View style={styles.slotAvatarGrid}>
+              {['👦🏻', '👩🏼', '🧔🏻‍♂️', '👧🏻', '🐯', '🐼', '🦊', '👑', '🎮', '⭐', '🔥', '🎯', '🚀', '💎'].map(av => (
+                <Pressable
+                  key={av}
+                  style={[
+                    styles.slotAvatarOption,
+                    passEditAvatar === av && styles.slotAvatarOptionSelected,
+                  ]}
+                  onPress={() => {
+                    NativeEffectsService.triggerCardSelect();
+                    setPassEditAvatar(av);
+                  }}
+                >
+                  <Text style={{ fontSize: 22 }}>{av}</Text>
+                </Pressable>
+              ))}
+            </View>
+            <View style={styles.modalBtnRow}>
+              <Pressable
+                style={styles.modalCancelBtn}
+                onPress={() => setEditingPassPlayer(null)}
+              >
+                <Text style={styles.modalCancelText}>CANCEL</Text>
+              </Pressable>
+              <Pressable
+                style={styles.modalJoinBtn}
+                onPress={() => {
+                  NativeEffectsService.triggerCardSelect();
+                  if (editingPassPlayer) {
+                    session.updatePassAndPlayPlayer(
+                      editingPassPlayer.id,
+                      passEditName.trim() || editingPassPlayer.name,
+                      passEditAvatar
+                    );
+                    setEditingPassPlayer(null);
+                  }
+                }}
+              >
+                <Text style={styles.modalJoinText}>SAVE</Text>
               </Pressable>
             </View>
           </View>
@@ -1243,5 +1340,45 @@ const styles = StyleSheet.create({
     color: '#FFF',
     fontSize: 13,
     fontWeight: '700',
+  },
+  slotEditBtn: {
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.15)',
+  },
+  slotEditText: {
+    color: COLORS.goldGlow,
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  passPlaySlotTag: {
+    color: '#94A3B8',
+    fontSize: 11,
+    fontWeight: '600',
+    marginTop: 2,
+  },
+  slotAvatarGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    justifyContent: 'center',
+    marginVertical: 12,
+  },
+  slotAvatarOption: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1.5,
+    borderColor: 'transparent',
+  },
+  slotAvatarOptionSelected: {
+    borderColor: COLORS.goldGlow,
+    backgroundColor: 'rgba(245, 158, 11, 0.2)',
   },
 });

@@ -1,4 +1,5 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { SafeStorage } from '../services/SafeStorage';
 
 const DEFAULT_SUPABASE_URL = 'https://fgouwmigftxgnwjcpcot.supabase.co';
 const DEFAULT_SUPABASE_ANON_KEY =
@@ -18,6 +19,27 @@ const SUPABASE_ANON_KEY =
 
 let clientInstance: SupabaseClient | null = null;
 
+// Safe Storage adapter for Supabase Auth to prevent AsyncStorage unlinked exceptions
+const SupabaseAuthStorage = {
+  getItem: async (key: string): Promise<string | null> => {
+    try {
+      return await SafeStorage.getItem(key);
+    } catch (_) {
+      return null;
+    }
+  },
+  setItem: async (key: string, value: string): Promise<void> => {
+    try {
+      await SafeStorage.setItem(key, value);
+    } catch (_) {}
+  },
+  removeItem: async (key: string): Promise<void> => {
+    try {
+      await SafeStorage.removeItem(key);
+    } catch (_) {}
+  },
+};
+
 export const isSupabaseConfigured = (): boolean => {
   return Boolean(
     SUPABASE_URL &&
@@ -33,6 +55,7 @@ export const getSupabaseClient = (): SupabaseClient => {
   try {
     clientInstance = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
       auth: {
+        storage: SupabaseAuthStorage,
         persistSession: true,
         autoRefreshToken: true,
         detectSessionInUrl: false,
@@ -45,7 +68,14 @@ export const getSupabaseClient = (): SupabaseClient => {
     });
   } catch (err) {
     console.warn('[SupabaseClient] Initialization fallback:', err);
-    clientInstance = createClient(DEFAULT_SUPABASE_URL, DEFAULT_SUPABASE_ANON_KEY);
+    clientInstance = createClient(DEFAULT_SUPABASE_URL, DEFAULT_SUPABASE_ANON_KEY, {
+      auth: {
+        storage: SupabaseAuthStorage,
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: false,
+      },
+    });
   }
 
   return clientInstance;
