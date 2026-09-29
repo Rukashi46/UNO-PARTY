@@ -36,9 +36,6 @@ jobs:
           distribution: 'zulu'
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
       - name: Install dependencies
         run: npm ci --legacy-peer-deps || npm install --legacy-peer-deps
 
@@ -46,7 +43,9 @@ jobs:
         run: npx tsc --noEmit
 
       - name: Generate Native Android Project (Expo Prebuild)
-        run: npx expo prebuild --platform android --no-install
+        run: |
+          npx expo prebuild --platform android --no-install
+          echo "sdk.dir=$ANDROID_HOME" > android/local.properties
 
       - name: Make Gradle wrapper executable
         run: chmod +x android/gradlew
