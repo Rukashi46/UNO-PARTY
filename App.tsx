@@ -15,6 +15,7 @@ import { GameMode, GameRules } from './src/types/game';
 import { MultiplayerSession } from './src/multiplayer/MultiplayerSession';
 import { AppSettingsService } from './src/services/AppSettingsService';
 import { ProductionErrorBoundary } from './src/components/common/ProductionErrorBoundary';
+import * as ExpoSplashScreen from 'expo-splash-screen';
 
 type AppScreen = 'SPLASH' | 'HOME' | 'SETTINGS' | 'LOBBY' | 'RULES' | 'GAMEPLAY';
 
@@ -34,9 +35,12 @@ export default function App() {
     hapticsEnabled: true,
   });
 
-  // Initialize App Settings on Mount
+  // Initialize App Settings & Dismiss Native Splash on Mount
   useEffect(() => {
     AppSettingsService.init();
+    try {
+      ExpoSplashScreen.hideAsync().catch(() => {});
+    } catch (_) {}
   }, []);
 
   // Android Hardware Back Button Handling

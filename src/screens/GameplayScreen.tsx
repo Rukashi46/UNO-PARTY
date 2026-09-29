@@ -762,15 +762,29 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
             // Bot response to pending draw stack
             const curStack = pendingDrawStackRef.current;
             if (curStack > 0) {
-              const botColors: UnoColor[] = ['RED', 'YELLOW', 'GREEN', 'BLUE'];
-              const chosenColor = botColors[Math.floor(Math.random() * botColors.length)];
+              const topCard = validDiscard.length > 0 ? validDiscard[validDiscard.length - 1] : null;
+              const topDraw = topCard ? UnoDeckService.getDrawAmount(topCard) : 2;
+              const currentDrawValue = topDraw > 0 ? topDraw : 2;
 
-              if (Math.random() > 0.6) {
-                // Bot stacks +2
+              // Eligible bot stack options: newDrawValue >= currentDrawValue
+              const botEligibleStackValues: Array<'DRAW_TWO' | 'WILD_DRAW_FOUR' | 'WILD_DRAW_SIX' | 'WILD_DRAW_TEN'> = [];
+              if (currentDrawValue <= 2) botEligibleStackValues.push('DRAW_TWO');
+              if (currentDrawValue <= 4) botEligibleStackValues.push('WILD_DRAW_FOUR');
+              if (currentDrawValue <= 6 && deckType === 'NO_MERCY') botEligibleStackValues.push('WILD_DRAW_SIX');
+              if (currentDrawValue <= 10 && deckType === 'NO_MERCY') botEligibleStackValues.push('WILD_DRAW_TEN');
+
+              const canBotStack = botEligibleStackValues.length > 0 && Math.random() > 0.45;
+
+              if (canBotStack) {
+                const chosenStackValue = botEligibleStackValues[Math.floor(Math.random() * botEligibleStackValues.length)];
+                const stackAmount = chosenStackValue === 'DRAW_TWO' ? 2 : chosenStackValue === 'WILD_DRAW_FOUR' ? 4 : chosenStackValue === 'WILD_DRAW_SIX' ? 6 : 10;
+                const botColors: UnoColor[] = ['RED', 'YELLOW', 'GREEN', 'BLUE'];
+                const chosenColor = botColors[Math.floor(Math.random() * botColors.length)];
+
                 const stackCard: UnoCard = {
                   id: `bot_card_${Date.now()}`,
-                  color: chosenColor,
-                  value: 'DRAW_TWO',
+                  color: chosenStackValue === 'DRAW_TWO' ? chosenColor : 'WILD',
+                  value: chosenStackValue,
                 };
 
                 setAllPlayers(prev => {
@@ -792,14 +806,14 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
                 pendingFlightResolve.current = () => {
                   setDiscardPile(prev => [...prev, stackCard]);
                   setPendingDrawStack(prev => {
-                    const s = prev + 2;
+                    const s = prev + stackAmount;
                     pendingDrawStackRef.current = s;
                     return s;
                   });
                   setActiveColor(chosenColor);
                   activeColorRef.current = chosenColor;
                   NativeEffectsService.triggerCardPlay();
-                  advanceTurnRef.current({ playedCard: stackCard, newActiveColor: chosenColor, reason: 'BOT_STACK_DRAW_TWO' });
+                  advanceTurnRef.current({ playedCard: stackCard, newActiveColor: chosenColor, reason: `BOT_STACK_${chosenStackValue}` });
                 };
 
                 return validDeck;
@@ -939,13 +953,45 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
                   return next;
                 });
 
-                setAnnouncement({
-                  text: `${bot.name} `,
-                  highlight: 'drew a card from deck',
-                  color: '#94A3B8',
-                });
+                // Check whether THAT newly drawn card is legally playable
+                const topCard = validDiscard[validDiscard.length - 1] || null;
+                const isPlayable = UnoDeckService.canPlayCard(
+                  drawnCard,
+                  topCard,
+                  currentActiveColor,
+                  0,
+                  rules
+                );
 
-                advanceTurnRef.current({ newActiveColor: currentActiveColor, reason: 'BOT_DRAW' });
+                if (isPlayable && Math.random() > 0.4) {
+                  // Bot immediately plays the drawn playable card
+                  const chosenColor = drawnCard.color === 'WILD' ? (['RED', 'YELLOW', 'GREEN', 'BLUE'] as UnoColor[])[Math.floor(Math.random() * 4)] : drawnCard.color;
+                  setDiscardPile(prev => [...prev, drawnCard]);
+                  setActiveColor(chosenColor);
+                  activeColorRef.current = chosenColor;
+                  setAllPlayers(prev => {
+                    const next = prev.map((p, idx) =>
+                      idx === botIndex ? { ...p, cardCount: Math.max(0, p.cardCount - 1) } : p
+                    );
+                    allPlayersRef.current = next;
+                    return next;
+                  });
+                  setAnnouncement({
+                    text: `${bot.name} played drawn card: `,
+                    highlight: `${chosenColor} ${drawnCard.value.replace(/_/g, ' ')}`,
+                    color: COLOR_MAP[chosenColor] || COLORS.unoYellow,
+                  });
+                  NativeEffectsService.triggerCardPlay();
+                  advanceTurnRef.current({ playedCard: drawnCard, newActiveColor: chosenColor, reason: 'BOT_PLAY_DRAWN' });
+                } else {
+                  // Card is unplayable or bot keeps: turn auto-advances
+                  setAnnouncement({
+                    text: `${bot.name} `,
+                    highlight: isPlayable ? 'drew and kept card' : 'drew an unplayable card',
+                    color: '#94A3B8',
+                  });
+                  advanceTurnRef.current({ newActiveColor: currentActiveColor, reason: 'BOT_DRAW' });
+                }
               };
 
               return nextDeck;
@@ -1091,56 +1137,66 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
         }
       }
 
-      const curIdx = currentPlayerIndexRef.current;
-      setAllPlayers(prev => {
-        const next = prev.map((p, idx) => {
+      // Visual flight animation for accepting penalty cards
+      setFlightConfig({
+        active: true,
+        card: drawnCards[0] || null,
+        isDrawFlight: true,
+        startPos: { x: 832, y: 488 },
+        endPos: { x: 960, y: 920 },
+      });
+
+      pendingFlightResolve.current = () => {
+        const curIdx = currentPlayerIndexRef.current;
+        const nextPlayers = allPlayersRef.current.map((p, idx) => {
           if (idx === curIdx) {
             const nextHand = [...p.hand, ...drawnCards];
             return { ...p, hand: nextHand, cardCount: nextHand.length };
           }
           return p;
         });
-        allPlayersRef.current = next;
-        return next;
-      });
+        allPlayersRef.current = nextPlayers;
+        setAllPlayers(nextPlayers);
 
-      setDeck(tempDeck);
-      setPendingDrawStack(0);
-      pendingDrawStackRef.current = 0;
-      showToast('DRAW PENALTY', `You drew ${drawnCards.length} cards from the stack!`, 'penalty');
-      session.acceptDrawStack();
+        setDeck(tempDeck);
+        setPendingDrawStack(0);
+        pendingDrawStackRef.current = 0;
+        showToast('DRAW PENALTY', `You drew ${drawnCards.length} cards from the stack!`, 'penalty');
+        session.acceptDrawStack();
 
-      // Check Mercy Rule (25+ cards in No Mercy)
-      const evalResult = UnoGameEngine.evaluatePlayerCompletion(
-        allPlayersRef.current,
-        rules,
-        finishingOrderRef.current,
-        eliminatedOrderRef.current
-      );
+        // Check Mercy Rule (25+ cards in No Mercy)
+        const evalResult = UnoGameEngine.evaluatePlayerCompletion(
+          allPlayersRef.current,
+          rules,
+          finishingOrderRef.current,
+          eliminatedOrderRef.current
+        );
 
-      finishingOrderRef.current = evalResult.finishingOrder;
-      eliminatedOrderRef.current = evalResult.eliminatedOrder;
-      setFinishingOrder(evalResult.finishingOrder);
-      setEliminatedOrder(evalResult.eliminatedOrder);
+        finishingOrderRef.current = evalResult.finishingOrder;
+        eliminatedOrderRef.current = evalResult.eliminatedOrder;
+        setFinishingOrder(evalResult.finishingOrder);
+        setEliminatedOrder(evalResult.eliminatedOrder);
 
-      allPlayersRef.current = evalResult.updatedPlayers;
-      setAllPlayers(evalResult.updatedPlayers);
+        allPlayersRef.current = evalResult.updatedPlayers;
+        setAllPlayers(evalResult.updatedPlayers);
 
-      if (evalResult.justEliminatedPlayerId) {
-        const elim = evalResult.updatedPlayers.find(p => p.id === evalResult.justEliminatedPlayerId);
-        showToast('ELIMINATED!', `${elim?.name || 'Player'} reached 25+ cards and was eliminated!`, 'penalty');
-      }
+        if (evalResult.justEliminatedPlayerId) {
+          const elim = evalResult.updatedPlayers.find(p => p.id === evalResult.justEliminatedPlayerId);
+          showToast('ELIMINATED!', `${elim?.name || 'Player'} reached 25+ cards and was eliminated!`, 'penalty');
+        }
 
-      if (evalResult.isMatchOver) {
-        setFinalResults(evalResult.finalResults);
-        const w = evalResult.winner;
-        setWinner(w ? { name: w.name, avatar: w.avatar, isHuman: w.isHuman } : null);
-        setActionLock('GAME_OVER');
-        return;
-      }
+        if (evalResult.isMatchOver) {
+          setFinalResults(evalResult.finalResults);
+          const w = evalResult.winner;
+          setWinner(w ? { name: w.name, avatar: w.avatar, isHuman: w.isHuman } : null);
+          setActionLock('GAME_OVER');
+          return;
+        }
 
-      // Penalty drawer loses turn
-      advanceToNextActivePlayer({ newActiveColor: activeColor, reason: 'ACCEPTED_DRAW_STACK' });
+        // Penalty drawer automatically loses turn - advances to next active player without requiring End Turn
+        advanceToNextActivePlayer({ newActiveColor: activeColorRef.current, reason: 'ACCEPTED_DRAW_STACK' });
+      };
+
       return;
     }
 
@@ -1171,34 +1227,100 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
 
     pendingFlightResolve.current = () => {
       const curIdx = currentPlayerIndexRef.current;
-      setAllPlayers(prev => {
-        const next = prev.map((p, idx) => {
-          if (idx === curIdx) {
-            const nextHand = [...p.hand, cardToDraw];
-            return { ...p, hand: nextHand, cardCount: nextHand.length };
-          }
-          return p;
-        });
-        allPlayersRef.current = next;
-        return next;
+      const curPlayer = allPlayersRef.current[curIdx];
+
+      // 1. Add drawn card to player's hand and commit deck
+      const nextPlayers = allPlayersRef.current.map((p, idx) => {
+        if (idx === curIdx) {
+          const nextHand = [...p.hand, cardToDraw];
+          return { ...p, hand: nextHand, cardCount: nextHand.length };
+        }
+        return p;
       });
+      allPlayersRef.current = nextPlayers;
+      setAllPlayers(nextPlayers);
 
       setDeck(newDeck);
       setDiscardPile(currentDiscard);
-      setHasDrawnThisTurn(true);
-      setActionLock('IDLE');
-      NativeEffectsService.triggerCardSelect();
 
-      const curName = allPlayersRef.current[curIdx]?.name || 'You';
-      setAnnouncement({
-        text: `${curName} `,
-        highlight: 'drew a card from the deck',
-        color: COLORS.unoBlue,
-      });
+      // Check Mercy Rule (25+ cards in No Mercy)
+      const evalResult = UnoGameEngine.evaluatePlayerCompletion(
+        allPlayersRef.current,
+        rules,
+        finishingOrderRef.current,
+        eliminatedOrderRef.current
+      );
+
+      finishingOrderRef.current = evalResult.finishingOrder;
+      eliminatedOrderRef.current = evalResult.eliminatedOrder;
+      setFinishingOrder(evalResult.finishingOrder);
+      setEliminatedOrder(evalResult.eliminatedOrder);
+
+      allPlayersRef.current = evalResult.updatedPlayers;
+      setAllPlayers(evalResult.updatedPlayers);
+
+      if (evalResult.justEliminatedPlayerId) {
+        const elim = evalResult.updatedPlayers.find(p => p.id === evalResult.justEliminatedPlayerId);
+        showToast('ELIMINATED!', `${elim?.name || 'Player'} reached 25+ cards and was eliminated!`, 'penalty');
+      }
+
+      if (evalResult.isMatchOver) {
+        setFinalResults(evalResult.finalResults);
+        const w = evalResult.winner;
+        setWinner(w ? { name: w.name, avatar: w.avatar, isHuman: w.isHuman } : null);
+        setActionLock('GAME_OVER');
+        return;
+      }
 
       session.drawCard();
+
+      // 2. Check whether THAT newly drawn card is legally playable under current discard, color, and rules
+      const topCard = currentDiscard[currentDiscard.length - 1] || null;
+      const isPlayable = UnoDeckService.canPlayCard(
+        cardToDraw,
+        topCard,
+        activeColorRef.current,
+        0,
+        rules
+      );
+
+      const curName = curPlayer?.name || 'You';
+
+      if (!isPlayable) {
+        // IF THE DRAWN CARD IS NOT PLAYABLE:
+        // - Automatically complete the current player's turn.
+        // - Automatically advance to the next eligible ACTIVE player.
+        // - Do NOT require the player to press End Turn.
+        // - Do NOT leave the player waiting on the same turn.
+        // - Do NOT allow another card selection/action.
+        setAnnouncement({
+          text: `${curName} drew `,
+          highlight: `${cardToDraw.color === 'WILD' ? '' : cardToDraw.color} ${cardToDraw.value.replace(/_/g, ' ')} (Unplayable)`,
+          color: '#94A3B8',
+        });
+        showToast('DRAW: UNPLAYABLE', `${cardToDraw.color === 'WILD' ? '' : cardToDraw.color} ${cardToDraw.value.replace(/_/g, ' ')} cannot be played. Turn advances!`, 'warning');
+        NativeEffectsService.triggerTurnChange();
+        advanceToNextActivePlayer({ reason: 'DRAW_UNPLAYABLE_CARD' });
+      } else {
+        // IF THE DRAWN CARD IS PLAYABLE:
+        // - Keep the current player's turn.
+        // - Keep the drawn card in their hand.
+        // - Allow the player to either:
+        //     a) Play the drawn card, OR
+        //     b) Press End Turn.
+        // - End Turn remains available only because the drawn card is playable.
+        setHasDrawnThisTurn(true);
+        setActionLock('IDLE');
+        NativeEffectsService.triggerCardSelect();
+        setAnnouncement({
+          text: `${curName} drew `,
+          highlight: `${cardToDraw.color === 'WILD' ? '' : cardToDraw.color} ${cardToDraw.value.replace(/_/g, ' ')} (Playable!)`,
+          color: COLOR_MAP[cardToDraw.color] || COLORS.unoYellow,
+        });
+        showToast('DRAW: PLAYABLE!', `Drawn card can be played! Play it or tap End Turn.`, 'success');
+      }
     };
-  }, [isMyTurn, actionLock, pendingDrawStack, hasDrawnThisTurn, deck, discardPile, ensureCardsInDeck, showToast, session, advanceToNextActivePlayer, activeColor]);
+  }, [isMyTurn, actionLock, pendingDrawStack, hasDrawnThisTurn, deck, discardPile, ensureCardsInDeck, showToast, session, advanceToNextActivePlayer, rules]);
 
   // 3. PLAY CARD (Two-Tap Confirmed)
   const handlePlayCard = useCallback(
@@ -1212,7 +1334,7 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
 
       const topCard = discardPile[discardPile.length - 1] || null;
 
-      // Part 5: Stacking verification
+      // Part 5: Stacking verification - newDrawValue >= currentDrawValue
       if (pendingDrawStack > 0) {
         if (!rules.stacking) {
           NativeEffectsService.triggerInvalidAction();
@@ -1220,9 +1342,16 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
           return;
         }
         const cardDraw = UnoDeckService.getDrawAmount(card);
+        const topDraw = topCard ? UnoDeckService.getDrawAmount(topCard) : 2;
+        const currentDrawValue = topDraw > 0 ? topDraw : 2;
         if (cardDraw === 0) {
           NativeEffectsService.triggerInvalidAction();
           showToast('STACK ACTIVE', `You must play a +card to stack or draw penalty (+${pendingDrawStack})!`, 'penalty');
+          return;
+        }
+        if (cardDraw < currentDrawValue) {
+          NativeEffectsService.triggerInvalidAction();
+          showToast('STACK RULE', `Cannot stack +${cardDraw} on +${currentDrawValue}. Must be +${currentDrawValue} or higher!`, 'penalty');
           return;
         }
       }

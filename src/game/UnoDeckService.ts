@@ -236,7 +236,8 @@ export class UnoDeckService {
     );
   }
 
-  static getDrawAmount(card: UnoCard): number {
+  static getDrawAmount(card: UnoCard | null): number {
+    if (!card) return 0;
     switch (card.value) {
       case 'DRAW_TWO':
         return 2;
@@ -262,12 +263,18 @@ export class UnoDeckService {
   ): boolean {
     if (!topCard) return true;
 
-    // Stacking rule: When an active draw stack exists, normal matching-color cards CANNOT bypass it!
+    // Stacking rule: A draw card can be stacked only when: newDrawValue >= currentDrawValue
     if (pendingDrawStack > 0) {
       if (!rules.stacking) return false;
-      const cardDraw = this.getDrawAmount(card);
-      // Only cards that contribute to the draw penalty can be stacked
-      return cardDraw > 0;
+      const newDrawValue = this.getDrawAmount(card);
+      if (newDrawValue === 0) return false;
+
+      // Determine current draw value on top of discard pile
+      const topDraw = this.getDrawAmount(topCard);
+      const currentDrawValue = topDraw > 0 ? topDraw : 2;
+
+      // NEVER allow a lower-value draw card to stack on a higher-value draw card
+      return newDrawValue >= currentDrawValue;
     }
 
     // Wild cards are playable on any turn when no pending stack

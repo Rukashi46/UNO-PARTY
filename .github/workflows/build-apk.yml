@@ -50,15 +50,15 @@ jobs:
       - name: Make Gradle wrapper executable
         run: chmod +x android/gradlew
 
-      - name: Build Android Debug APK
+      - name: Build Standalone Android APK (Release)
         run: |
           cd android
-          ./gradlew assembleDebug --no-daemon
+          ./gradlew assembleRelease --no-daemon
 
-      - name: Upload Debug APK
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: uno-party-debug-apk
-          path: android/app/build/outputs/apk/debug/*.apk
+          name: uno-party-apk
+          path: android/app/build/outputs/apk/release/*.apk
           retention-days: 14
           if-no-files-found: error
