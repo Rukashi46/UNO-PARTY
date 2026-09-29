@@ -1,3 +1,4 @@
+import { Platform, Linking } from 'react-native';
 import { SafeStorage } from './SafeStorage';
 import { devLog, devWarn } from './ErrorMapper';
 import { getSupabaseClient, isSupabaseConfigured } from '../multiplayer/SupabaseClient';
@@ -165,22 +166,47 @@ export class PlayerIdentityService {
 
     try {
       const supabase = getSupabaseClient();
+      const redirectUrl =
+        Platform.OS === 'web' && typeof window !== 'undefined'
+          ? window.location.origin
+          : 'unoarena://auth/callback';
+
       const { data, error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
-          skipBrowserRedirect: false,
+          redirectTo: redirectUrl,
+          skipBrowserRedirect: true,
         },
       });
 
       if (error) {
         devWarn('PlayerIdentityService', 'Google OAuth sign in failed:', error.message);
+        if (error.message.includes('not enabled') || error.message.includes('Unsupported provider')) {
+          return { error: 'Google sign-in is not enabled in your Supabase dashboard yet.' };
+        }
         return { error: error.message };
+      }
+
+      if (data?.url) {
+        if (Platform.OS === 'web' && typeof window !== 'undefined') {
+          // Open in a popup window so user does not lose their current game or app state
+          const popup = window.open(data.url, 'google_login', 'width=520,height=640,menubar=no,toolbar=no');
+          if (!popup) {
+            window.location.href = data.url;
+          }
+        } else {
+          await Linking.openURL(data.url);
+        }
       }
 
       return {};
     } catch (e: any) {
       devWarn('PlayerIdentityService', 'Google OAuth sign in exception:', e);
-      return { error: e?.message || 'Login failed.' };
+      const msg = e?.message || 'Login failed.';
+      if (msg.includes('not enabled') || msg.includes('Unsupported provider')) {
+        return { error: 'Google sign-in is not enabled in your Supabase dashboard yet.' };
+      }
+      return { error: msg };
     }
   }
 

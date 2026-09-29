@@ -171,20 +171,25 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({ visible, onClose }) 
             {/* Google Login / Sign Out Action */}
             <View style={styles.accountActionBox}>
               {profile?.isGuest ? (
-                <Pressable
-                  style={[styles.googleSignInBtn, isSigningIn && styles.btnDisabled]}
-                  disabled={isSigningIn}
-                  onPress={handleGoogleSignIn}
-                >
-                  {isSigningIn ? (
-                    <ActivityIndicator color="#000" />
-                  ) : (
-                    <>
-                      <Text style={styles.googleIcon}>G</Text>
-                      <Text style={styles.googleSignInText}>Sign in with Google</Text>
-                    </>
-                  )}
-                </Pressable>
+                <>
+                  <Pressable
+                    style={[styles.googleSignInBtn, isSigningIn && styles.btnDisabled]}
+                    disabled={isSigningIn}
+                    onPress={handleGoogleSignIn}
+                  >
+                    {isSigningIn ? (
+                      <ActivityIndicator color="#000" />
+                    ) : (
+                      <>
+                        <Text style={styles.googleIcon}>G</Text>
+                        <Text style={styles.googleSignInText}>Sign in with Google</Text>
+                      </>
+                    )}
+                  </Pressable>
+                  <Text style={styles.authNoticeText}>
+                    Guest accounts save locally and support all game modes. Google login requires Google Provider enabled in your Supabase project.
+                  </Text>
+                </>
               ) : (
                 <Pressable style={styles.signOutBtn} onPress={handleSignOut}>
                   <Text style={styles.signOutText}>Sign Out of Google</Text>
@@ -381,6 +386,13 @@ const styles = StyleSheet.create({
     color: '#0F172A',
     fontWeight: '800',
     fontSize: 14,
+  },
+  authNoticeText: {
+    color: '#94A3B8',
+    fontSize: 11,
+    textAlign: 'center',
+    marginTop: 8,
+    lineHeight: 15,
   },
   signOutBtn: {
     backgroundColor: 'rgba(239, 68, 68, 0.15)',
