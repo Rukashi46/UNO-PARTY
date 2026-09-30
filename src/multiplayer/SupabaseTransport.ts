@@ -29,7 +29,13 @@ export class SupabaseTransport implements MultiplayerTransport {
 
     try {
       const supabase = getSupabaseClient();
-      const channelName = `uno_room_${roomCode.toUpperCase()}`;
+      const code = roomCode.toUpperCase().trim();
+      const channelName = `uno-room:${code}`;
+      const role = player.isHost ? 'HOST' : 'CLIENT';
+
+      if (__DEV__) {
+        console.log(`[ONLINE_ROOM]\nroomId=${code}\nchannel=${channelName}\nplayerId=${player.id}\nrole=${role}`);
+      }
 
       // Clean up previous channel if any
       if (this.channel) {
@@ -52,7 +58,7 @@ export class SupabaseTransport implements MultiplayerTransport {
           if (presenceList && presenceList.length > 0) {
             const p = presenceList[0] as RoomPlayer;
             if (p && p.id !== this.localPlayer?.id) {
-              this.notifyEvent({ type: 'PLAYER_JOINED', player: p });
+              this.notifyEvent({ type: 'PLAYER_JOINED', player: { ...p, controller: 'REMOTE_HUMAN' } });
             }
           }
         });
@@ -61,7 +67,7 @@ export class SupabaseTransport implements MultiplayerTransport {
       this.channel.on('presence', { event: 'join' }, ({ newPresences }) => {
         newPresences.forEach((presence: any) => {
           if (presence.id !== this.localPlayer?.id) {
-            this.notifyEvent({ type: 'PLAYER_JOINED', player: presence });
+            this.notifyEvent({ type: 'PLAYER_JOINED', player: { ...presence, controller: 'REMOTE_HUMAN' } });
           }
         });
       });
@@ -97,6 +103,9 @@ export class SupabaseTransport implements MultiplayerTransport {
           if (status === 'SUBSCRIBED') {
             clearTimeout(timeout);
             this.setConnectionStatus('CONNECTED');
+            if (__DEV__) {
+              console.log(`[TRANSPORT]\nconnected=true\ntransport=ONLINE\nroomId=${code}\nplayerId=${player.id}`);
+            }
             if (this.localPlayer) {
               this.channel?.track(this.localPlayer);
             }
@@ -104,6 +113,9 @@ export class SupabaseTransport implements MultiplayerTransport {
           } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
             clearTimeout(timeout);
             this.setConnectionStatus('DISCONNECTED');
+            if (__DEV__) {
+              console.log(`[TRANSPORT]\nconnected=false\ntransport=ONLINE\nroomId=${code}\nplayerId=${player.id}`);
+            }
             reject(new Error(`Failed to subscribe: ${status}`));
           }
         });

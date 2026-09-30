@@ -40,6 +40,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [isJoining, setIsJoining] = useState<boolean>(false);
   const [isStarting, setIsStarting] = useState<boolean>(false);
+  const [isCreating, setIsCreating] = useState<boolean>(false);
 
   // Pass & Play Player Slot Editing State (Requirement 21)
   const [editingPassPlayer, setEditingPassPlayer] = useState<RoomPlayer | null>(null);
@@ -68,37 +69,92 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
     }
   }, [mode, session]);
 
+  // Create Room manually triggered by user action (Requirement 4)
+  const handleCreateRoom = async () => {
+    if (isCreating) return;
+    setIsCreating(true);
+    try {
+      NativeEffectsService.triggerCardSelect();
+      const profile = await PlayerIdentityService.getProfile();
+      const userDefaults = AppSettingsService.getSettings();
+      const deviceId = await PlayerIdentityService.getDeviceId();
+
+      const player: RoomPlayer = {
+        id: profile.id,
+        name: profile.displayName,
+        avatar: profile.avatar,
+        isHost: true,
+        isReady: true,
+        isConnected: true,
+        cardCount: 7,
+        controller: 'LOCAL_HUMAN',
+        deviceId,
+      };
+
+      const rules: GameRules = {
+        deckType: userDefaults.defaultDeck || 'NORMAL',
+        stacking: userDefaults.defaultStackingEnabled ?? true,
+        sevenZeroRule: userDefaults.defaultSevenZeroEnabled ?? (userDefaults.defaultDeck === 'NO_MERCY'),
+        jumpInRule: userDefaults.defaultJumpInEnabled ?? true,
+        drawUntilPlayable: userDefaults.defaultDrawUntilPlayable ?? false,
+        forcePlay: userDefaults.defaultForcePlay ?? false,
+        mercy25Cards: userDefaults.defaultDeck === 'NO_MERCY',
+        includeCustomWilds: true,
+        soundEnabled: userDefaults.soundEnabled ?? true,
+        hapticsEnabled: userDefaults.hapticsEnabled ?? true,
+        gameEndMode: userDefaults.defaultGameEndMode || 'FIRST_PLAYER_WINS',
+      };
+
+      const created = await session.createRoom(mode, player, rules);
+      setRoom(created);
+      showToast(`Created Room ${created.code}!`);
+    } catch (err: any) {
+      showToast(getSafeErrorMessage(err));
+    } finally {
+      setIsCreating(false);
+    }
+  };
+
   // Initialize Room & Presence
   const initLobby = useCallback(async () => {
-    const profile = await PlayerIdentityService.getProfile();
-    const userDefaults = AppSettingsService.getSettings();
-
-    const player: RoomPlayer = {
-      id: profile.id,
-      name: profile.displayName,
-      avatar: profile.avatar,
-      isHost: true,
-      isReady: true,
-      isConnected: true,
-      cardCount: 7,
-      controller: 'LOCAL_HUMAN',
-    };
-
-    const rules: GameRules = {
-      deckType: userDefaults.defaultDeck || 'NORMAL',
-      stacking: userDefaults.defaultStackingEnabled ?? true,
-      sevenZeroRule: userDefaults.defaultSevenZeroEnabled ?? (userDefaults.defaultDeck === 'NO_MERCY'),
-      jumpInRule: userDefaults.defaultJumpInEnabled ?? true,
-      drawUntilPlayable: userDefaults.defaultDrawUntilPlayable ?? false,
-      forcePlay: userDefaults.defaultForcePlay ?? false,
-      mercy25Cards: userDefaults.defaultDeck === 'NO_MERCY',
-      includeCustomWilds: true,
-      soundEnabled: userDefaults.soundEnabled ?? true,
-      hapticsEnabled: userDefaults.hapticsEnabled ?? true,
-      gameEndMode: userDefaults.defaultGameEndMode || 'FIRST_PLAYER_WINS',
-    };
+    // If returning from rules with an active room in same mode, reuse it
+    const existing = session.getRoom();
+    if (existing && existing.mode === mode) {
+      setRoom(existing);
+      return;
+    }
 
     if (mode === 'PLAY_BOTS' || mode === 'PASS_AND_PLAY') {
+      const profile = await PlayerIdentityService.getProfile();
+      const userDefaults = AppSettingsService.getSettings();
+      const deviceId = await PlayerIdentityService.getDeviceId();
+
+      const player: RoomPlayer = {
+        id: profile.id,
+        name: profile.displayName,
+        avatar: profile.avatar,
+        isHost: true,
+        isReady: true,
+        isConnected: true,
+        cardCount: 7,
+        controller: 'LOCAL_HUMAN',
+        deviceId,
+      };
+
+      const rules: GameRules = {
+        deckType: userDefaults.defaultDeck || 'NORMAL',
+        stacking: userDefaults.defaultStackingEnabled ?? true,
+        sevenZeroRule: userDefaults.defaultSevenZeroEnabled ?? (userDefaults.defaultDeck === 'NO_MERCY'),
+        jumpInRule: userDefaults.defaultJumpInEnabled ?? true,
+        drawUntilPlayable: userDefaults.defaultDrawUntilPlayable ?? false,
+        forcePlay: userDefaults.defaultForcePlay ?? false,
+        mercy25Cards: userDefaults.defaultDeck === 'NO_MERCY',
+        includeCustomWilds: true,
+        soundEnabled: userDefaults.soundEnabled ?? true,
+        hapticsEnabled: userDefaults.hapticsEnabled ?? true,
+        gameEndMode: userDefaults.defaultGameEndMode || 'FIRST_PLAYER_WINS',
+      };
+
       const created = await session.createRoom(
         mode,
         player,
@@ -125,8 +181,6 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
         });
         created.maxPlayers = 4;
       } else if (mode === 'PASS_AND_PLAY') {
-        // Pass & Play: ALL PLAYERS ARE LOCAL_HUMAN (ZERO BOTS)
-        // Player 1 defaults to the device user's profile
         if (created.players[0]) {
           created.players[0].name = profile.displayName || 'Player 1';
           created.players[0].avatar = profile.avatar || '👦🏻';
@@ -150,8 +204,9 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
       setRoom({ ...created, players: [...created.players] });
       setConnectionStatus('CONNECTED');
     } else {
-      const created = await session.createRoom(mode, player, rules);
-      setRoom(created);
+      // CRITICAL: Opening WLAN or Online lobby must NOT create a room! (Requirement 4)
+      setRoom(null);
+      setConnectionStatus('DISCONNECTED');
       if (mode === 'WLAN') {
         handleScanWlan();
       }
@@ -189,12 +244,15 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
         isReady: false,
         isConnected: true,
         cardCount: 7,
+        deviceId: identity.deviceId,
+        controller: 'LOCAL_HUMAN',
       };
 
       const joined = await session.joinRoom(mode, joinCodeInput.trim().toUpperCase(), player);
       setRoom(joined);
       setIsJoinModalOpen(false);
-      showToast(`Joined Room ${joinCodeInput.toUpperCase()}!`);
+      setJoinCodeInput('');
+      showToast(`Joined Room ${joined.code}!`);
     } catch (err: any) {
       showToast(getSafeErrorMessage(err));
     } finally {
@@ -215,6 +273,8 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
         isReady: false,
         isConnected: true,
         cardCount: 7,
+        deviceId: identity.deviceId,
+        controller: 'LOCAL_HUMAN',
       };
 
       const joined = await session.joinRoom(mode, nearby.code, player);
@@ -262,8 +322,15 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
         <Pressable
           onPress={() => {
             NativeEffectsService.triggerCardSelect();
-            session.leaveRoom();
-            onBack();
+            if (room) {
+              session.leaveRoom();
+              setRoom(null);
+              if (mode === 'PLAY_BOTS' || mode === 'PASS_AND_PLAY') {
+                onBack();
+              }
+            } else {
+              onBack();
+            }
           }}
           style={styles.backBtn}
         >
@@ -272,346 +339,466 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
 
         <View style={styles.roomHeader}>
           <Text style={styles.roomCodeTitle}>
-            {mode === 'WLAN' ? `WLAN ROOM ${roomCode}` : `ROOM ${roomCode}`}
+            {room
+              ? (mode === 'WLAN' ? `WLAN ROOM ${roomCode}` : `ROOM ${roomCode}`)
+              : (mode === 'WLAN' ? 'WLAN MULTIPLAYER' : 'ONLINE MULTIPLAYER')}
           </Text>
           <View style={styles.onlineStatusRow}>
             <View
               style={[
                 styles.statusDot,
-                connectionStatus === 'CONNECTED' && { backgroundColor: COLORS.unoGreen },
+                (room ? connectionStatus === 'CONNECTED' : true) && { backgroundColor: COLORS.unoGreen },
                 connectionStatus === 'RECONNECTING' && { backgroundColor: COLORS.unoYellow },
                 connectionStatus === 'DISCONNECTED' && { backgroundColor: COLORS.unoRed },
               ]}
             />
             <Text style={styles.onlineLabel}>
-              {mode} • {players.length}/{room?.maxPlayers || 10} players
+              {room
+                ? `${mode} • ${players.length}/${room?.maxPlayers || 10} players`
+                : (mode === 'WLAN' ? 'Local Wi-Fi Network' : 'Global Online Lobby')}
             </Text>
           </View>
         </View>
 
         <View style={styles.headerActions}>
-          <Pressable
-            onPress={() => {
-              NativeEffectsService.triggerCardSelect();
-              showToast(`Room Code ${roomCode} copied!`);
-            }}
-            style={styles.copyBtn}
-          >
-            <Text style={styles.copyIcon}>📋</Text>
-          </Pressable>
+          {room ? (
+            <>
+              <Pressable
+                onPress={() => {
+                  NativeEffectsService.triggerCardSelect();
+                  showToast(`Room Code ${roomCode} copied!`);
+                }}
+                style={styles.copyBtn}
+              >
+                <Text style={styles.copyIcon}>📋</Text>
+              </Pressable>
 
-          <Pressable
-            onPress={() => setIsJoinModalOpen(true)}
-            style={styles.switchRoomBtn}
-          >
-            <Text style={styles.switchIcon}>🔑</Text>
-          </Pressable>
+              <Pressable
+                onPress={() => setIsJoinModalOpen(true)}
+                style={styles.switchRoomBtn}
+              >
+                <Text style={styles.switchIcon}>🔑</Text>
+              </Pressable>
+            </>
+          ) : (
+            <View style={{ width: 40 }} />
+          )}
         </View>
       </View>
 
-      <ScrollView contentContainerStyle={styles.contentScroll} showsVerticalScrollIndicator={false}>
-        {/* Host Banner */}
-        <View style={styles.hostBanner}>
-          <View style={styles.hostInfo}>
-            <Text style={styles.crownEmoji}>👑</Text>
-            <View>
-              <Text style={styles.hostSubtitle}>ROOM HOST</Text>
-              <Text style={styles.hostName}>
-                {players.find(p => p.isHost)?.name || 'HOST'}
+      {!room ? (
+        /* Lobby Selection View: Shown when no room is created or joined yet (Requirement 4 & 8) */
+        <ScrollView contentContainerStyle={styles.contentScroll} showsVerticalScrollIndicator={false}>
+          {/* Create Room Card */}
+          <Pressable
+            style={({ pressed }) => [styles.createRoomCard, pressed && styles.cardPressed]}
+            onPress={handleCreateRoom}
+            disabled={isCreating}
+          >
+            <View style={styles.createRoomIconBox}>
+              <Text style={{ fontSize: 28 }}>👑</Text>
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.createRoomTitle}>CREATE ROOM</Text>
+              <Text style={styles.createRoomSub}>
+                {mode === 'WLAN'
+                  ? 'Host a match for nearby devices on this Wi-Fi'
+                  : 'Host an online match and invite players with a room code'}
               </Text>
             </View>
-          </View>
-          <View style={styles.leaderBadge}>
-            <Text style={styles.leaderText}>{isHost ? 'You are Host' : 'Host Authority'}</Text>
-          </View>
-        </View>
+            {isCreating ? (
+              <ActivityIndicator color={COLORS.goldGlow} size="small" />
+            ) : (
+              <Text style={styles.createRoomArrow}>›</Text>
+            )}
+          </Pressable>
 
-        {/* Deck Configuration Selector (Part 32) */}
-        <View style={styles.deckSection}>
-          <View style={styles.sectionHeaderRow}>
-            <Text style={styles.sectionLabel}>DECK CONFIGURATION</Text>
-            <Text style={styles.deckRuleNotice}>{isHost ? 'Host Controls Deck' : 'Synchronized by Host'}</Text>
-          </View>
-
-          <View style={styles.deckToggleRow}>
-            {/* Normal UNO: 112 Cards */}
-            <Pressable
-              style={[
-                styles.deckChoiceCard,
-                activeDeckType === 'NORMAL' && styles.deckChoiceCardActive,
-                !isHost && styles.deckChoiceCardDisabled,
-              ]}
-              onPress={() => isHost && handleSelectDeckType('NORMAL')}
-            >
-              <View style={styles.deckBadgeHeader}>
-                <Text style={styles.deckEmoji}>🃏</Text>
-                {activeDeckType === 'NORMAL' && (
-                  <View style={styles.activeCheckBadge}>
-                    <Text style={styles.checkText}>ACTIVE</Text>
-                  </View>
-                )}
-              </View>
-              <Text style={styles.deckTitle}>NORMAL UNO</Text>
-              <Text style={styles.deckCount}>112 Cards</Text>
-              <Text style={styles.deckDesc}>
-                Classic 108 + 1 Dedicated Shuffle Hands + 3 Custom Wilds
-              </Text>
-            </Pressable>
-
-            {/* UNO No Mercy: 168 Cards */}
-            <Pressable
-              style={[
-                styles.deckChoiceCard,
-                styles.deckChoiceNoMercy,
-                activeDeckType === 'NO_MERCY' && styles.deckChoiceNoMercyActive,
-                !isHost && styles.deckChoiceCardDisabled,
-              ]}
-              onPress={() => isHost && handleSelectDeckType('NO_MERCY')}
-            >
-              <View style={styles.deckBadgeHeader}>
-                <Text style={styles.deckEmoji}>🔥</Text>
-                {activeDeckType === 'NO_MERCY' && (
-                  <View style={[styles.activeCheckBadge, { backgroundColor: '#EF4444' }]}>
-                    <Text style={styles.checkText}>ACTIVE</Text>
-                  </View>
-                )}
-              </View>
-              <Text style={styles.deckTitle}>UNO NO MERCY</Text>
-              <Text style={styles.deckCount}>168 Cards</Text>
-              <Text style={styles.deckDesc}>
-                +6, +10, Discard All, Skip Everyone, Color Roulette, 7-Swap & 0-Pass
-              </Text>
-            </Pressable>
-          </View>
-        </View>
-
-        {/* Room Size / Player Count Selector */}
-        <View style={styles.roomSizeSection}>
-          <View style={styles.sectionHeaderRow}>
-            <Text style={styles.sectionLabel}>
-              {mode === 'PLAY_BOTS' ? 'MATCH SIZE / BOTS' : 'ROOM CAPACITY'}
+          {/* Join with Code Card */}
+          <View style={styles.joinCodeCard}>
+            <Text style={styles.sectionLabel}>JOIN WITH ROOM CODE</Text>
+            <Text style={styles.joinCodeSub}>
+              Enter the 6-character room code from the host
             </Text>
-            <Text style={styles.deckRuleNotice}>
-              {mode === 'PLAY_BOTS'
-                ? `${players.length} Total (You + ${players.length - 1} Bots)`
-                : isHost
-                ? 'Host Controls Capacity'
-                : `Max Capacity: ${room?.maxPlayers || 10} Players`}
-            </Text>
-          </View>
-
-          <View style={styles.roomSizeRow}>
-            {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(size => {
-              const isSelected = (mode === 'PLAY_BOTS' || mode === 'PASS_AND_PLAY')
-                ? players.length === size
-                : (room?.maxPlayers || 10) === size;
-              const disabled = !isHost && mode !== 'PLAY_BOTS' && mode !== 'PASS_AND_PLAY';
-
-              return (
-                <Pressable
-                  key={size}
-                  disabled={disabled}
-                  style={[
-                    styles.roomSizePill,
-                    isSelected && styles.roomSizePillActive,
-                    disabled && styles.roomSizePillDisabled,
-                  ]}
-                  onPress={() => handleSelectRoomSize(size)}
-                >
-                  <Text style={[styles.roomSizeNumber, isSelected && styles.roomSizeNumberActive]}>
-                    {size}
-                  </Text>
-                  <Text style={[styles.roomSizeLabel, isSelected && styles.roomSizeLabelActive]}>
-                    {size === 1 ? '1 PLAYER' : `${size} PLAYERS`}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
-        </View>
-
-        {/* Nearby WLAN Rooms (Part 15) */}
-        {mode === 'WLAN' && (
-          <View style={styles.wlanSection}>
-            <View style={styles.sectionHeaderRow}>
-              <Text style={styles.sectionLabel}>NEARBY WLAN ROOMS</Text>
-              <Pressable style={styles.refreshBtn} onPress={handleScanWlan}>
-                {isScanningWlan ? (
-                  <ActivityIndicator size="small" color="#F59E0B" />
+            <View style={styles.joinCodeInputRow}>
+              <TextInput
+                style={styles.joinCodeInput}
+                value={joinCodeInput}
+                onChangeText={t => setJoinCodeInput(t.toUpperCase())}
+                placeholder="e.g. AB7K2Q"
+                placeholderTextColor="#64748B"
+                maxLength={8}
+                autoCapitalize="characters"
+                autoCorrect={false}
+              />
+              <Pressable
+                style={[styles.joinCodeSubmitBtn, isJoining && { opacity: 0.6 }]}
+                onPress={handleJoinByCode}
+                disabled={isJoining || !joinCodeInput.trim()}
+              >
+                {isJoining ? (
+                  <ActivityIndicator color="#0F172A" size="small" />
                 ) : (
-                  <Text style={styles.refreshText}>🔄 SCAN AGAIN</Text>
+                  <Text style={styles.joinCodeSubmitText}>JOIN</Text>
                 )}
               </Pressable>
             </View>
+          </View>
 
-            {nearbyRooms.length > 0 ? (
-              <View style={styles.nearbyList}>
-                {nearbyRooms.map(nr => (
-                  <View key={nr.code} style={styles.nearbyCard}>
-                    <View style={styles.nearbyLeft}>
-                      <Text style={styles.nearbyAppTitle}>UNO PARTY</Text>
-                      <Text style={styles.nearbyRoomCode}>Room: {nr.code}</Text>
-                      <Text style={styles.nearbyMeta}>
-                        Host: {nr.hostName} • {nr.playerCount}/{nr.maxPlayers} • {nr.deckType === 'NORMAL' ? 'NORMAL UNO' : 'NO MERCY'}
-                      </Text>
+          {/* For WLAN: Nearby Rooms Section (Requirement 8) */}
+          {mode === 'WLAN' && (
+            <View style={styles.wlanSection}>
+              <View style={styles.sectionHeaderRow}>
+                <Text style={styles.sectionLabel}>NEARBY WLAN ROOMS</Text>
+                <Pressable style={styles.refreshBtn} onPress={handleScanWlan}>
+                  {isScanningWlan ? (
+                    <ActivityIndicator size="small" color="#F59E0B" />
+                  ) : (
+                    <Text style={styles.refreshText}>🔄 SCAN AGAIN</Text>
+                  )}
+                </Pressable>
+              </View>
+
+              {nearbyRooms.length > 0 ? (
+                <View style={styles.nearbyList}>
+                  {nearbyRooms.map(nr => (
+                    <View key={nr.code} style={styles.nearbyCard}>
+                      <View style={styles.nearbyLeft}>
+                        <Text style={styles.nearbyAppTitle}>UNO PARTY</Text>
+                        <Text style={styles.nearbyRoomCode}>Room: {nr.code}</Text>
+                        <Text style={styles.nearbyMeta}>
+                          Host: {nr.hostName} • {nr.playerCount}/{nr.maxPlayers} • {nr.deckType === 'NORMAL' ? 'NORMAL UNO' : 'NO MERCY'}
+                        </Text>
+                      </View>
+                      <Pressable
+                        style={styles.nearbyJoinBtn}
+                        onPress={() => handleJoinNearbyRoom(nr)}
+                        disabled={isJoining}
+                      >
+                        <Text style={styles.nearbyJoinText}>JOIN</Text>
+                      </Pressable>
                     </View>
+                  ))}
+                </View>
+              ) : (
+                <View style={styles.emptyWlanCard}>
+                  <Text style={styles.emptyWlanEmoji}>📡</Text>
+                  <Text style={styles.emptyWlanTitle}>No other rooms on this Wi-Fi yet</Text>
+                  <Text style={styles.emptyWlanSub}>
+                    Ask the host to tap "Create Room", or tap "Scan Again" once ready.
+                  </Text>
+                </View>
+              )}
+            </View>
+          )}
+        </ScrollView>
+      ) : (
+        /* Active Room View: Rendered once a room is Created or Joined */
+        <>
+          <ScrollView contentContainerStyle={styles.contentScroll} showsVerticalScrollIndicator={false}>
+            {/* Host Banner */}
+            <View style={styles.hostBanner}>
+              <View style={styles.hostInfo}>
+                <Text style={styles.crownEmoji}>👑</Text>
+                <View>
+                  <Text style={styles.hostSubtitle}>{isHost ? (mode === 'WLAN' ? 'MY ROOM' : 'ROOM HOST') : 'ROOM HOST'}</Text>
+                  <Text style={styles.hostName}>
+                    {players.find(p => p.isHost)?.name || 'HOST'}
+                  </Text>
+                </View>
+              </View>
+              <View style={styles.leaderBadge}>
+                <Text style={styles.leaderText}>{isHost ? 'You are Host' : 'Host Authority'}</Text>
+              </View>
+            </View>
+
+            {/* Deck Configuration Selector (Part 32) */}
+            <View style={styles.deckSection}>
+              <View style={styles.sectionHeaderRow}>
+                <Text style={styles.sectionLabel}>DECK CONFIGURATION</Text>
+                <Text style={styles.deckRuleNotice}>{isHost ? 'Host Controls Deck' : 'Synchronized by Host'}</Text>
+              </View>
+
+              <View style={styles.deckToggleRow}>
+                {/* Normal UNO: 112 Cards */}
+                <Pressable
+                  style={[
+                    styles.deckChoiceCard,
+                    activeDeckType === 'NORMAL' && styles.deckChoiceCardActive,
+                    !isHost && styles.deckChoiceCardDisabled,
+                  ]}
+                  onPress={() => isHost && handleSelectDeckType('NORMAL')}
+                >
+                  <View style={styles.deckBadgeHeader}>
+                    <Text style={styles.deckEmoji}>🃏</Text>
+                    {activeDeckType === 'NORMAL' && (
+                      <View style={styles.activeCheckBadge}>
+                        <Text style={styles.checkText}>ACTIVE</Text>
+                      </View>
+                    )}
+                  </View>
+                  <Text style={styles.deckTitle}>NORMAL UNO</Text>
+                  <Text style={styles.deckCount}>112 Cards</Text>
+                  <Text style={styles.deckDesc}>
+                    Classic 108 + 1 Dedicated Shuffle Hands + 3 Custom Wilds
+                  </Text>
+                </Pressable>
+
+                {/* UNO No Mercy: 168 Cards */}
+                <Pressable
+                  style={[
+                    styles.deckChoiceCard,
+                    styles.deckChoiceNoMercy,
+                    activeDeckType === 'NO_MERCY' && styles.deckChoiceNoMercyActive,
+                    !isHost && styles.deckChoiceCardDisabled,
+                  ]}
+                  onPress={() => isHost && handleSelectDeckType('NO_MERCY')}
+                >
+                  <View style={styles.deckBadgeHeader}>
+                    <Text style={styles.deckEmoji}>🔥</Text>
+                    {activeDeckType === 'NO_MERCY' && (
+                      <View style={[styles.activeCheckBadge, { backgroundColor: '#EF4444' }]}>
+                        <Text style={styles.checkText}>ACTIVE</Text>
+                      </View>
+                    )}
+                  </View>
+                  <Text style={styles.deckTitle}>UNO NO MERCY</Text>
+                  <Text style={styles.deckCount}>168 Cards</Text>
+                  <Text style={styles.deckDesc}>
+                    +6, +10, Discard All, Skip Everyone, Color Roulette, 7-Swap & 0-Pass
+                  </Text>
+                </Pressable>
+              </View>
+            </View>
+
+            {/* Room Size / Player Count Selector */}
+            <View style={styles.roomSizeSection}>
+              <View style={styles.sectionHeaderRow}>
+                <Text style={styles.sectionLabel}>
+                  {mode === 'PLAY_BOTS' ? 'MATCH SIZE / BOTS' : 'ROOM CAPACITY'}
+                </Text>
+                <Text style={styles.deckRuleNotice}>
+                  {mode === 'PLAY_BOTS'
+                    ? `${players.length} Total (You + ${players.length - 1} Bots)`
+                    : isHost
+                    ? 'Host Controls Capacity'
+                    : `Max Capacity: ${room?.maxPlayers || 10} Players`}
+                </Text>
+              </View>
+
+              <View style={styles.roomSizeRow}>
+                {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(size => {
+                  const isSelected = (mode === 'PLAY_BOTS' || mode === 'PASS_AND_PLAY')
+                    ? players.length === size
+                    : (room?.maxPlayers || 10) === size;
+                  const disabled = !isHost && mode !== 'PLAY_BOTS' && mode !== 'PASS_AND_PLAY';
+
+                  return (
                     <Pressable
-                      style={styles.nearbyJoinBtn}
-                      onPress={() => handleJoinNearbyRoom(nr)}
+                      key={size}
+                      disabled={disabled}
+                      style={[
+                        styles.roomSizePill,
+                        isSelected && styles.roomSizePillActive,
+                        disabled && styles.roomSizePillDisabled,
+                      ]}
+                      onPress={() => handleSelectRoomSize(size)}
                     >
-                      <Text style={styles.nearbyJoinText}>JOIN</Text>
+                      <Text style={[styles.roomSizeNumber, isSelected && styles.roomSizeNumberActive]}>
+                        {size}
+                      </Text>
+                      <Text style={[styles.roomSizeLabel, isSelected && styles.roomSizeLabelActive]}>
+                        {size === 1 ? '1 PLAYER' : `${size} PLAYERS`}
+                      </Text>
                     </Pressable>
+                  );
+                })}
+              </View>
+            </View>
+
+            {/* Nearby WLAN Rooms (Part 15) */}
+            {mode === 'WLAN' && (
+              <View style={styles.wlanSection}>
+                <View style={styles.sectionHeaderRow}>
+                  <Text style={styles.sectionLabel}>NEARBY WLAN ROOMS</Text>
+                  <Pressable style={styles.refreshBtn} onPress={handleScanWlan}>
+                    {isScanningWlan ? (
+                      <ActivityIndicator size="small" color="#F59E0B" />
+                    ) : (
+                      <Text style={styles.refreshText}>🔄 SCAN AGAIN</Text>
+                    )}
+                  </Pressable>
+                </View>
+
+                {nearbyRooms.length > 0 ? (
+                  <View style={styles.nearbyList}>
+                    {nearbyRooms.map(nr => (
+                      <View key={nr.code} style={styles.nearbyCard}>
+                        <View style={styles.nearbyLeft}>
+                          <Text style={styles.nearbyAppTitle}>UNO PARTY</Text>
+                          <Text style={styles.nearbyRoomCode}>Room: {nr.code}</Text>
+                          <Text style={styles.nearbyMeta}>
+                            Host: {nr.hostName} • {nr.playerCount}/{nr.maxPlayers} • {nr.deckType === 'NORMAL' ? 'NORMAL UNO' : 'NO MERCY'}
+                          </Text>
+                        </View>
+                        <Pressable
+                          style={styles.nearbyJoinBtn}
+                          onPress={() => handleJoinNearbyRoom(nr)}
+                        >
+                          <Text style={styles.nearbyJoinText}>JOIN</Text>
+                        </Pressable>
+                      </View>
+                    ))}
+                  </View>
+                ) : (
+                  <View style={styles.emptyWlanCard}>
+                    <Text style={styles.emptyWlanEmoji}>📡</Text>
+                    <Text style={styles.emptyWlanTitle}>No other rooms on this Wi-Fi yet</Text>
+                    <Text style={styles.emptyWlanSub}>
+                      Other devices on the same Wi-Fi can join via room code: {roomCode}
+                    </Text>
+                  </View>
+                )}
+              </View>
+            )}
+
+            {/* Connected Players Section */}
+            <View style={styles.playersSection}>
+              <View style={styles.sectionHeaderRow}>
+                <Text style={styles.sectionLabel}>CONNECTED PLAYERS ({players.length})</Text>
+                <Text style={styles.readyLabel}>Status</Text>
+              </View>
+
+              <View style={styles.playersList}>
+                {players.map((p, idx) => (
+                  <View key={p.id || idx} style={styles.playerCard}>
+                    <View style={styles.playerLeft}>
+                      <View style={styles.playerAvatarCircle}>
+                        <Text style={styles.playerAvatarEmoji}>{p.avatar}</Text>
+                      </View>
+                      <View>
+                        <Text style={styles.playerNameText}>
+                          {p.name} {mode === 'PASS_AND_PLAY' ? `(Slot ${idx + 1})` : p.id === localPlayer?.id ? '(You)' : ''}
+                        </Text>
+                        {p.isHost && mode !== 'PASS_AND_PLAY' && <Text style={styles.hostTag}>Room Leader</Text>}
+                        {mode === 'PASS_AND_PLAY' && (
+                          <Text style={styles.passPlaySlotTag}>
+                            {idx === 0 ? 'Device Owner (Default)' : 'Pass Player'}
+                          </Text>
+                        )}
+                      </View>
+                    </View>
+
+                    <View style={styles.playerRightStatus}>
+                      {mode === 'PASS_AND_PLAY' ? (
+                        <Pressable
+                          style={styles.slotEditBtn}
+                          onPress={() => {
+                            NativeEffectsService.triggerCardSelect();
+                            setEditingPassPlayer(p);
+                            setPassEditName(p.name);
+                            setPassEditAvatar(p.avatar);
+                          }}
+                        >
+                          <Text style={styles.slotEditText}>✎ EDIT</Text>
+                        </Pressable>
+                      ) : (
+                        <>
+                          {p.isReady ? (
+                            <View style={styles.readyBadge}>
+                              <Text style={styles.readyBadgeText}>✓ READY</Text>
+                            </View>
+                          ) : (
+                            <View style={styles.waitingBadge}>
+                              <Text style={styles.waitingBadgeText}>WAITING</Text>
+                            </View>
+                          )}
+                          <View
+                            style={[
+                              styles.greenLight,
+                              !p.isConnected && { backgroundColor: COLORS.unoRed },
+                            ]}
+                          />
+                        </>
+                      )}
+                    </View>
                   </View>
                 ))}
               </View>
-            ) : (
-              <View style={styles.emptyWlanCard}>
-                <Text style={styles.emptyWlanEmoji}>📡</Text>
-                <Text style={styles.emptyWlanTitle}>No other rooms on this Wi-Fi yet</Text>
-                <Text style={styles.emptyWlanSub}>
-                  Other devices on the same Wi-Fi can join via room code: {roomCode}
-                </Text>
-              </View>
-            )}
-          </View>
-        )}
+            </View>
 
-        {/* Connected Players Section */}
-        <View style={styles.playersSection}>
-          <View style={styles.sectionHeaderRow}>
-            <Text style={styles.sectionLabel}>CONNECTED PLAYERS ({players.length})</Text>
-            <Text style={styles.readyLabel}>Status</Text>
-          </View>
-
-          <View style={styles.playersList}>
-            {players.map((p, idx) => (
-              <View key={p.id || idx} style={styles.playerCard}>
-                <View style={styles.playerLeft}>
-                  <View style={styles.playerAvatarCircle}>
-                    <Text style={styles.playerAvatarEmoji}>{p.avatar}</Text>
-                  </View>
-                  <View>
-                    <Text style={styles.playerNameText}>
-                      {p.name} {mode === 'PASS_AND_PLAY' ? `(Slot ${idx + 1})` : p.id === localPlayer?.id ? '(You)' : ''}
-                    </Text>
-                    {p.isHost && mode !== 'PASS_AND_PLAY' && <Text style={styles.hostTag}>Room Leader</Text>}
-                    {mode === 'PASS_AND_PLAY' && (
-                      <Text style={styles.passPlaySlotTag}>
-                        {idx === 0 ? 'Device Owner (Default)' : 'Pass Player'}
-                      </Text>
-                    )}
-                  </View>
+            {/* Match Style Preview Card */}
+            <Pressable
+              onPress={() => {
+                NativeEffectsService.triggerCardSelect();
+                onOpenRules();
+              }}
+              style={styles.rulesPreviewCard}
+            >
+              <View style={styles.rulesCardLeft}>
+                <View style={styles.fireBox}>
+                  <Text style={styles.fireEmoji}>⚡</Text>
                 </View>
-
-                <View style={styles.playerRightStatus}>
-                  {mode === 'PASS_AND_PLAY' ? (
-                    <Pressable
-                      style={styles.slotEditBtn}
-                      onPress={() => {
-                        NativeEffectsService.triggerCardSelect();
-                        setEditingPassPlayer(p);
-                        setPassEditName(p.name);
-                        setPassEditAvatar(p.avatar);
-                      }}
-                    >
-                      <Text style={styles.slotEditText}>✎ EDIT</Text>
-                    </Pressable>
-                  ) : (
-                    <>
-                      {p.isReady ? (
-                        <View style={styles.readyBadge}>
-                          <Text style={styles.readyBadgeText}>✓ READY</Text>
-                        </View>
-                      ) : (
-                        <View style={styles.waitingBadge}>
-                          <Text style={styles.waitingBadgeText}>WAITING</Text>
-                        </View>
-                      )}
-                      <View
-                        style={[
-                          styles.greenLight,
-                          !p.isConnected && { backgroundColor: COLORS.unoRed },
-                        ]}
-                      />
-                    </>
-                  )}
+                <View>
+                  <Text style={styles.rulesCardSubtitle}>MATCH SETTINGS</Text>
+                  <Text style={styles.rulesCardTitle}>
+                    {activeDeckType === 'NORMAL' ? 'Modern Party Rules' : 'No Mercy Extreme Rules'}
+                  </Text>
+                  <Text style={styles.rulesHighlights}>
+                    Deck: {activeDeckType} • Stacking {room?.rules.stacking ? 'ON' : 'OFF'} • End: {room?.rules.gameEndMode === 'PLAY_UNTIL_LAST_PLAYER' ? 'Play to Last' : 'First Wins'}
+                  </Text>
                 </View>
               </View>
-            ))}
-          </View>
-        </View>
+              <Text style={styles.rulesArrow}>›</Text>
+            </Pressable>
+          </ScrollView>
 
-        {/* Match Style Preview Card */}
-        <Pressable
-          onPress={() => {
-            NativeEffectsService.triggerCardSelect();
-            onOpenRules();
-          }}
-          style={styles.rulesPreviewCard}
-        >
-          <View style={styles.rulesCardLeft}>
-            <View style={styles.fireBox}>
-              <Text style={styles.fireEmoji}>⚡</Text>
-            </View>
-            <View>
-              <Text style={styles.rulesCardSubtitle}>MATCH SETTINGS</Text>
-              <Text style={styles.rulesCardTitle}>
-                {activeDeckType === 'NORMAL' ? 'Modern Party Rules' : 'No Mercy Extreme Rules'}
-              </Text>
-              <Text style={styles.rulesHighlights}>
-                Deck: {activeDeckType} • Stacking {room?.rules.stacking ? 'ON' : 'OFF'} • End: {room?.rules.gameEndMode === 'PLAY_UNTIL_LAST_PLAYER' ? 'Play to Last' : 'First Wins'}
-              </Text>
-            </View>
-          </View>
-          <Text style={styles.rulesArrow}>›</Text>
-        </Pressable>
-      </ScrollView>
-
-      {/* Primary Action Button */}
-      {isHost ? (
-        <Pressable
-          style={[styles.startMatchBtn, isStarting && { opacity: 0.6 }]}
-          disabled={isStarting}
-          onPress={async () => {
-            if (isStarting) return;
-            // Section 8: Minimum player validation
-            if ((mode === 'ONLINE' || mode === 'WLAN') && players.length < 2) {
-              showToast('At least 2 players are required to start a multiplayer match.');
-              return;
-            }
-            setIsStarting(true);
-            NativeEffectsService.triggerUnoCall();
-            try {
-              await session.startMatch();
-              onStartMatch();
-            } catch (e: any) {
-              showToast(getSafeErrorMessage(e));
-            } finally {
-              setIsStarting(false);
-            }
-          }}
-        >
-          {isStarting ? (
-            <ActivityIndicator size="small" color="#0F172A" />
+          {/* Primary Action Button */}
+          {isHost ? (
+            <Pressable
+              style={[styles.startMatchBtn, isStarting && { opacity: 0.6 }]}
+              disabled={isStarting}
+              onPress={async () => {
+                if (isStarting) return;
+                // Section 8: Minimum player validation
+                if ((mode === 'ONLINE' || mode === 'WLAN') && players.length < 2) {
+                  showToast('At least 2 players are required to start a multiplayer match.');
+                  return;
+                }
+                setIsStarting(true);
+                NativeEffectsService.triggerUnoCall();
+                try {
+                  await session.startMatch();
+                  onStartMatch();
+                } catch (e: any) {
+                  showToast(getSafeErrorMessage(e));
+                } finally {
+                  setIsStarting(false);
+                }
+              }}
+            >
+              {isStarting ? (
+                <ActivityIndicator size="small" color="#0F172A" />
+              ) : (
+                <>
+                  <Text style={styles.playIcon}>▶</Text>
+                  <Text style={styles.startMatchText}>START MATCH</Text>
+                </>
+              )}
+            </Pressable>
           ) : (
-            <>
-              <Text style={styles.playIcon}>▶</Text>
-              <Text style={styles.startMatchText}>START MATCH</Text>
-            </>
+            <Pressable
+              style={[styles.readyBtn, localPlayer?.isReady && styles.readyBtnActive]}
+              onPress={async () => {
+                NativeEffectsService.triggerCardSelect();
+                await session.toggleReady();
+              }}
+            >
+              <Text style={styles.readyBtnText}>
+                {localPlayer?.isReady ? '✓ READY (TAP TO UNREADY)' : 'READY UP'}
+              </Text>
+            </Pressable>
           )}
-        </Pressable>
-      ) : (
-        <Pressable
-          style={[styles.readyBtn, localPlayer?.isReady && styles.readyBtnActive]}
-          onPress={async () => {
-            NativeEffectsService.triggerCardSelect();
-            await session.toggleReady();
-          }}
-        >
-          <Text style={styles.readyBtnText}>
-            {localPlayer?.isReady ? '✓ READY (TAP TO UNREADY)' : 'READY UP'}
-          </Text>
-        </Pressable>
+        </>
       )}
 
       {/* Join Room Code Modal */}
@@ -1380,5 +1567,93 @@ const styles = StyleSheet.create({
   slotAvatarOptionSelected: {
     borderColor: COLORS.goldGlow,
     backgroundColor: 'rgba(245, 158, 11, 0.2)',
+  },
+  createRoomCard: {
+    backgroundColor: 'rgba(245, 158, 11, 0.12)',
+    borderRadius: 20,
+    borderWidth: 1.5,
+    borderColor: 'rgba(245, 158, 11, 0.4)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 18,
+    gap: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+  },
+  createRoomIconBox: {
+    width: 56,
+    height: 56,
+    borderRadius: 18,
+    backgroundColor: 'rgba(245, 158, 11, 0.25)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  createRoomTitle: {
+    color: '#FFF',
+    fontSize: 18,
+    fontWeight: '900',
+    letterSpacing: 1,
+  },
+  createRoomSub: {
+    color: '#94A3B8',
+    fontSize: 12,
+    fontWeight: '600',
+    marginTop: 4,
+    lineHeight: 16,
+  },
+  createRoomArrow: {
+    color: COLORS.goldGlow,
+    fontSize: 26,
+    fontWeight: '600',
+  },
+  joinCodeCard: {
+    backgroundColor: 'rgba(23, 27, 38, 0.85)',
+    borderRadius: 20,
+    borderWidth: 1.5,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    padding: 18,
+    gap: 12,
+  },
+  joinCodeSub: {
+    color: '#94A3B8',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  joinCodeInputRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 4,
+  },
+  joinCodeInput: {
+    flex: 1,
+    height: 50,
+    backgroundColor: 'rgba(15, 23, 42, 0.8)',
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderColor: 'rgba(255, 255, 255, 0.15)',
+    paddingHorizontal: 16,
+    color: '#FFF',
+    fontSize: 18,
+    fontWeight: '900',
+    letterSpacing: 2,
+  },
+  joinCodeSubmitBtn: {
+    width: 90,
+    height: 50,
+    borderRadius: 14,
+    backgroundColor: '#F59E0B',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  joinCodeSubmitText: {
+    color: '#0F172A',
+    fontSize: 15,
+    fontWeight: '900',
+    letterSpacing: 1,
+  },
+  cardPressed: {
+    transform: [{ scale: 0.98 }],
   },
 });

@@ -6,6 +6,7 @@ export interface CloudRoomRecord {
   id: string;
   room_code: string;
   host_player_id: string;
+  host_id?: string;
   host_address?: string;
   mode: string;
   status: string;
@@ -224,29 +225,55 @@ export class SupabaseDataService {
     if (!isSupabaseConfigured()) return null;
     try {
       const supabase = getSupabaseClient();
-      const { data, error } = await supabase
+      const code = roomCode.toUpperCase();
+      const payload: Record<string, any> = {
+        room_code: code,
+        host_id: hostPlayerId,
+        host_player_id: hostPlayerId,
+        mode: mode,
+        game_mode: mode,
+        status: 'WAITING',
+        max_players: 10,
+        rules: rules,
+        host_address: hostAddress || null,
+        updated_at: new Date().toISOString(),
+      };
+
+      let { data, error } = await supabase
         .from('rooms')
-        .upsert(
-          {
-            room_code: roomCode.toUpperCase(),
-            host_player_id: hostPlayerId,
-            mode,
-            status: 'LOBBY',
-            max_players: 10,
-            rules: rules,
-            host_address: hostAddress || null,
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: 'room_code' }
-        )
+        .upsert(payload, { onConflict: 'room_code' })
         .select()
         .single();
+
+      // Fallback if specific column is missing on remote schema
+      if (error && (error.message.includes('host_player_id') || error.message.includes('host_id'))) {
+        delete payload.host_player_id;
+        const retry = await supabase.from('rooms').upsert(payload, { onConflict: 'room_code' }).select().single();
+        data = retry.data;
+        error = retry.error;
+      }
+
+      if (error && (error.message.includes("'mode'") || error.message.includes('game_mode'))) {
+        delete payload.mode;
+        const retry = await supabase.from('rooms').upsert(payload, { onConflict: 'room_code' }).select().single();
+        data = retry.data;
+        error = retry.error;
+      }
 
       if (error) {
         devWarn('SupabaseDataService', 'registerRoom error:', error.message);
         return null;
       }
-      return data as CloudRoomRecord;
+      return {
+        id: data.id,
+        room_code: data.room_code,
+        host_player_id: data.host_player_id || data.host_id || hostPlayerId,
+        host_address: data.host_address,
+        mode: data.mode || data.game_mode || mode,
+        status: data.status,
+        max_players: data.max_players || 10,
+        rules: data.rules || rules,
+      };
     } catch (e) {
       devWarn('SupabaseDataService', 'registerRoom exception:', e);
       return null;
@@ -270,10 +297,55 @@ export class SupabaseDataService {
         devWarn('SupabaseDataService', 'lookupRoom error:', error.message);
         return null;
       }
-      return data as CloudRoomRecord | null;
+      if (!data) return null;
+
+      return {
+        id: data.id,
+        room_code: data.room_code,
+        host_player_id: data.host_player_id || data.host_id || '',
+        host_address: data.host_address,
+        mode: data.mode || data.game_mode || 'ONLINE',
+        status: data.status,
+        max_players: data.max_players || 10,
+        rules: data.rules,
+      };
     } catch (e) {
       devWarn('SupabaseDataService', 'lookupRoom exception:', e);
       return null;
+    }
+  }
+
+  /**
+   * Fetches all registered players of a room from `room_players` table.
+   */
+  static async fetchRoomPlayers(roomId: string): Promise<any[]> {
+    if (!isSupabaseConfigured()) return [];
+    try {
+      const supabase = getSupabaseClient();
+      const { data, error } = await supabase
+        .from('room_players')
+        .select('*')
+        .eq('room_id', roomId)
+        .order('joined_at', { ascending: true });
+
+      if (error) {
+        devWarn('SupabaseDataService', 'fetchRoomPlayers error:', error.message);
+        return [];
+      }
+
+      return (data || []).map(row => ({
+        id: row.player_id,
+        name: row.display_name || row.username || 'Player',
+        avatar: row.avatar || '👦🏻',
+        isHost: Boolean(row.is_host),
+        isReady: Boolean(row.is_ready),
+        isConnected: Boolean(row.is_connected ?? row.connected ?? true),
+        cardCount: row.card_count || 7,
+        controller: 'REMOTE_HUMAN',
+      }));
+    } catch (e) {
+      devWarn('SupabaseDataService', 'fetchRoomPlayers exception:', e);
+      return [];
     }
   }
 
@@ -304,11 +376,11 @@ export class SupabaseDataService {
   }
 
   /**
-   * Updates status of an active room ('LOBBY', 'PLAYING', 'FINISHED', 'CANCELLED').
+   * Updates status of an active room ('WAITING', 'PLAYING', 'FINISHED', 'CLOSED').
    */
   static async updateRoomStatus(
     roomCode: string,
-    status: 'LOBBY' | 'PLAYING' | 'FINISHED' | 'CANCELLED'
+    status: 'LOBBY' | 'WAITING' | 'PLAYING' | 'FINISHED' | 'CANCELLED' | 'CLOSED'
   ): Promise<boolean> {
     if (!isSupabaseConfigured()) return false;
     try {
@@ -334,6 +406,7 @@ export class SupabaseDataService {
 
   /**
    * Inserts or updates a participant in `room_players` table.
+   * Handles both new joins and reconnections without duplicate keys.
    */
   static async joinRoomPlayer(
     roomId: string,
@@ -345,18 +418,37 @@ export class SupabaseDataService {
     if (!isSupabaseConfigured()) return false;
     try {
       const supabase = getSupabaseClient();
-      const { error } = await supabase.from('room_players').upsert(
-        {
-          room_id: roomId,
-          player_id: playerId,
-          username: username.substring(0, 16),
-          avatar,
-          is_host: isHost,
-          connected: true,
-          last_seen_at: new Date().toISOString(),
-        },
+      const sanitizedName = (username || 'Player').trim().substring(0, 32);
+      const payload: Record<string, any> = {
+        room_id: roomId,
+        player_id: playerId,
+        display_name: sanitizedName,
+        username: sanitizedName,
+        avatar: avatar || '👦🏻',
+        is_host: isHost,
+        is_ready: isHost,
+        is_connected: true,
+        connected: true,
+        last_seen: new Date().toISOString(),
+        last_seen_at: new Date().toISOString(),
+      };
+
+      let { error } = await supabase.from('room_players').upsert(
+        payload,
         { onConflict: 'room_id,player_id' }
       );
+
+      if (error && error.message.includes('display_name')) {
+        delete payload.display_name;
+        const retry = await supabase.from('room_players').upsert(payload, { onConflict: 'room_id,player_id' });
+        error = retry.error;
+      }
+
+      if (error && error.message.includes('last_seen_at')) {
+        delete payload.last_seen_at;
+        const retry = await supabase.from('room_players').upsert(payload, { onConflict: 'room_id,player_id' });
+        error = retry.error;
+      }
 
       if (error) {
         devWarn('SupabaseDataService', 'joinRoomPlayer error:', error.message);
@@ -370,7 +462,7 @@ export class SupabaseDataService {
   }
 
   /**
-   * Removes participant from `room_players` table.
+   * Removes participant from `room_players` table or marks disconnected.
    */
   static async leaveRoomPlayer(roomId: string, playerId: string): Promise<boolean> {
     if (!isSupabaseConfigured()) return false;

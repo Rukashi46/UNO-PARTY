@@ -20,8 +20,10 @@ export interface PlayerIdentity {
   isHost: boolean;
   isGuest?: boolean;
   email?: string;
+  deviceId?: string;
 }
 
+const DEVICE_ID_KEY = '@uno_party_device_id';
 const GUEST_ID_KEY = '@uno_party_guest_id';
 const ACTIVE_USER_ID_KEY = '@uno_party_active_user_id';
 const DEFAULT_AVATARS = ['👦🏻', '👩🏼', '🧔🏻‍♂️', '👧🏻', '🐯', '🐼', '🦊', '👑', '🎮', '⭐', '🔥', '🎯'];
@@ -93,10 +95,31 @@ export class PlayerIdentityService {
   }
 
   /**
+   * Retrieves or generates a persistent local Device ID.
+   * Identifies the local device / installation.
+   * Separated from playerId, roomId, and sessionId.
+   */
+  static async getDeviceId(): Promise<string> {
+    let deviceId: string | null = null;
+    try {
+      deviceId = await SafeStorage.getItem(DEVICE_ID_KEY);
+    } catch (_) {}
+
+    if (!deviceId || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(deviceId)) {
+      deviceId = generateUUID();
+      try {
+        await SafeStorage.setItem(DEVICE_ID_KEY, deviceId);
+      } catch (_) {}
+    }
+    return deviceId;
+  }
+
+  /**
    * Backward-compatible helper returning PlayerIdentity format.
    */
   static async getIdentity(): Promise<PlayerIdentity> {
     const profile = await this.getProfile();
+    const deviceId = await this.getDeviceId();
     return {
       id: profile.id,
       name: profile.displayName,
@@ -104,6 +127,7 @@ export class PlayerIdentityService {
       isHost: true,
       isGuest: profile.isGuest,
       email: profile.email,
+      deviceId,
     };
   }
 

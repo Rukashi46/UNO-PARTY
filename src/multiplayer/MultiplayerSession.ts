@@ -85,12 +85,25 @@ export class MultiplayerSession {
     rules: GameRules,
     customCode?: string
   ): Promise<MultiplayerRoom> {
-    this.mode = mode;
-    this.localPlayer = { ...player, isHost: true, isConnected: true, isReady: true };
+    // If already in a room, leave old room cleanly first (Requirement 17)
+    if (this.room) {
+      await this.leaveRoom();
+    }
 
-    const code = customCode || this.generateRoomCode(mode);
+    this.mode = mode;
+    this.localPlayer = {
+      ...player,
+      isHost: true,
+      isConnected: true,
+      isReady: true,
+      controller: 'LOCAL_HUMAN',
+    };
+
+    const code = (customCode || this.generateRoomCode(mode)).toUpperCase().trim();
+    let roomId = `room_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+
     const room: MultiplayerRoom = {
-      id: `room_${Date.now()}`,
+      id: roomId,
       code,
       hostId: player.id,
       status: 'WAITING',
@@ -100,14 +113,15 @@ export class MultiplayerSession {
       players: [{ ...this.localPlayer }],
       createdAt: Date.now(),
     };
-
     this.room = room;
+
     await this.initTransport(mode);
 
     if (mode === 'WLAN' && this.transport?.startAdvertising) {
       await this.transport.startAdvertising({
         code,
         hostName: player.name,
+        hostPlayerId: player.id,
         playerCount: 1,
         maxPlayers: 10,
         deckType: rules.deckType || 'NORMAL',
@@ -117,14 +131,20 @@ export class MultiplayerSession {
 
     if (mode === 'ONLINE') {
       await SupabaseDataService.syncProfile(player.id, player.name, player.avatar);
-      const cloudRoom = await SupabaseDataService.registerRoom(code, player.id, 'ONLINE_ROOM', rules);
+      const cloudRoom = await SupabaseDataService.registerRoom(code, player.id, 'ONLINE', rules);
       if (cloudRoom) {
         room.id = cloudRoom.id;
+        roomId = cloudRoom.id;
         await SupabaseDataService.joinRoomPlayer(cloudRoom.id, player.id, player.name, player.avatar, true);
       }
     }
 
     await this.transport?.connect(code, this.localPlayer);
+
+    if (__DEV__) {
+      console.log(`[ROOM_CREATE]\ntransport=${mode}\nroomId=${code}\nhostPlayerId=${player.id}`);
+    }
+
     this.notifyState();
     return room;
   }
@@ -134,25 +154,161 @@ export class MultiplayerSession {
     code: string,
     player: RoomPlayer
   ): Promise<MultiplayerRoom> {
-    // Section 9: Host and players cannot join their own room as duplicate
-    if (this.room && this.room.players.some(p => p.id === player.id)) {
-      devWarn('MultiplayerSession', `Player ${player.id} already in room`);
-      throw new ProductionError('ALREADY_IN_ROOM');
+    const formattedCode = code.toUpperCase().trim();
+
+    if (!formattedCode || formattedCode.length < 3) {
+      throw new ProductionError('ROOM_NOT_FOUND', 'Please enter a valid room code.');
     }
 
-    if (this.room && this.room.players.length >= this.room.maxPlayers) {
-      devWarn('MultiplayerSession', `Room ${code} is full (${this.room.players.length}/${this.room.maxPlayers})`);
-      throw new ProductionError('ROOM_FULL');
+    // Clean up previous room if joining a different room (Requirement 17)
+    if (this.room && this.room.code !== formattedCode) {
+      await this.leaveRoom();
     }
 
     this.mode = mode;
-    this.localPlayer = { ...player, isHost: false, isConnected: true, isReady: false };
+    this.localPlayer = {
+      ...player,
+      isHost: false,
+      isConnected: true,
+      isReady: false,
+      controller: 'LOCAL_HUMAN',
+    };
 
-    const formattedCode = code.toUpperCase().trim();
+    if (mode === 'ONLINE') {
+      if (__DEV__) {
+        console.log(`[ROOM_JOIN_REQUEST]\ntransport=ONLINE\nroomId=${formattedCode}\nplayerId=${player.id}`);
+      }
+
+      await SupabaseDataService.syncProfile(player.id, player.name, player.avatar);
+      const cloudRoom = await SupabaseDataService.lookupRoom(formattedCode);
+      if (!cloudRoom) {
+        if (__DEV__) {
+          console.log(`[ROOM_JOIN_REJECTED]\ntransport=ONLINE\nroomId=${formattedCode}\nplayerId=${player.id}\nreason=ROOM_NOT_FOUND`);
+        }
+        throw new ProductionError('ROOM_NOT_FOUND', `Room ${formattedCode} not found.`);
+      }
+
+      if (cloudRoom.status === 'CLOSED' || cloudRoom.status === 'FINISHED') {
+        if (__DEV__) {
+          console.log(`[ROOM_JOIN_REJECTED]\ntransport=ONLINE\nroomId=${formattedCode}\nplayerId=${player.id}\nreason=MATCH_FINISHED`);
+        }
+        throw new ProductionError('MATCH_STARTED', 'This match has already ended.');
+      }
+
+      // Check authoritative room membership (Requirement 6, 13, 18)
+      const existingMembers = await SupabaseDataService.fetchRoomPlayers(cloudRoom.id);
+      const isAlreadyMember = existingMembers.some(p => p.id === player.id);
+
+      if (!isAlreadyMember) {
+        if (existingMembers.length >= (cloudRoom.max_players || 10)) {
+          if (__DEV__) {
+            console.log(`[ROOM_JOIN_REJECTED]\ntransport=ONLINE\nroomId=${formattedCode}\nplayerId=${player.id}\nreason=ROOM_FULL`);
+          }
+          throw new ProductionError('ROOM_FULL', `Room ${formattedCode} is full.`);
+        }
+        if (cloudRoom.status === 'PLAYING') {
+          if (__DEV__) {
+            console.log(`[ROOM_JOIN_REJECTED]\ntransport=ONLINE\nroomId=${formattedCode}\nplayerId=${player.id}\nreason=MATCH_STARTED`);
+          }
+          throw new ProductionError('MATCH_STARTED', 'Match has already started.');
+        }
+        await SupabaseDataService.joinRoomPlayer(cloudRoom.id, player.id, player.name, player.avatar, false);
+      } else {
+        // Reconnect existing player
+        const isHost = existingMembers.find(p => p.id === player.id)?.isHost || false;
+        await SupabaseDataService.joinRoomPlayer(cloudRoom.id, player.id, player.name, player.avatar, isHost);
+      }
+
+      await this.initTransport(mode);
+      const connected = await this.transport?.connect(formattedCode, this.localPlayer);
+      if (!connected) {
+        throw new Error('Unable to connect to online room channel');
+      }
+
+      const updatedMembers = await SupabaseDataService.fetchRoomPlayers(cloudRoom.id);
+      const mappedPlayers: RoomPlayer[] = updatedMembers.map(m => ({
+        ...m,
+        controller: m.id === player.id ? 'LOCAL_HUMAN' : 'REMOTE_HUMAN',
+      }));
+
+      if (!mappedPlayers.some(p => p.id === player.id)) {
+        mappedPlayers.push({ ...this.localPlayer });
+      }
+
+      const room: MultiplayerRoom = {
+        id: cloudRoom.id,
+        code: formattedCode,
+        hostId: cloudRoom.host_player_id || cloudRoom.host_id || '',
+        status: cloudRoom.status === 'PLAYING' ? 'PLAYING' : 'WAITING',
+        mode: 'ONLINE',
+        rules: cloudRoom.rules || {
+          deckType: 'NORMAL',
+          stacking: true,
+          sevenZeroRule: false,
+          jumpInRule: true,
+          drawUntilPlayable: false,
+          forcePlay: false,
+          mercy25Cards: false,
+          includeCustomWilds: true,
+          soundEnabled: true,
+          hapticsEnabled: true,
+        },
+        maxPlayers: cloudRoom.max_players || 10,
+        players: mappedPlayers,
+      };
+
+      this.room = room;
+      if (__DEV__) {
+        console.log(`[ROOM_JOIN_ACCEPTED]\ntransport=ONLINE\nroomId=${formattedCode}\nplayerId=${player.id}\nmembers=${mappedPlayers.length}`);
+      }
+      this.notifyState();
+      return room;
+    }
+
+    if (mode === 'WLAN') {
+      if (__DEV__) {
+        console.log(`[ROOM_JOIN_REQUEST]\ntransport=WLAN\nroomId=${formattedCode}\nplayerId=${player.id}`);
+      }
+
+      await this.initTransport('WLAN');
+      const connected = await this.transport?.connect(formattedCode, this.localPlayer);
+      if (!connected) {
+        throw new ProductionError('ROOM_NOT_FOUND', `WLAN Room ${formattedCode} not found or unreachable on local network.`);
+      }
+
+      const room: MultiplayerRoom = {
+        id: `wlan_${formattedCode}`,
+        code: formattedCode,
+        hostId: '',
+        status: 'WAITING',
+        mode: 'WLAN',
+        rules: {
+          deckType: 'NORMAL',
+          stacking: true,
+          sevenZeroRule: false,
+          jumpInRule: true,
+          drawUntilPlayable: false,
+          forcePlay: false,
+          mercy25Cards: false,
+          includeCustomWilds: true,
+          soundEnabled: true,
+          hapticsEnabled: true,
+        },
+        maxPlayers: 10,
+        players: [{ ...this.localPlayer }],
+      };
+
+      this.room = room;
+      this.notifyState();
+      return room;
+    }
+
+    // Local modes (PLAY_BOTS / PASS_AND_PLAY)
+    await this.initTransport(mode);
     const room: MultiplayerRoom = {
-      id: `room_${Date.now()}`,
+      id: `local_${Date.now()}`,
       code: formattedCode,
-      hostId: '',
+      hostId: player.id,
       status: 'WAITING',
       mode,
       rules: {
@@ -170,28 +326,7 @@ export class MultiplayerSession {
       maxPlayers: 10,
       players: [{ ...this.localPlayer }],
     };
-
     this.room = room;
-
-    if (mode === 'ONLINE') {
-      await SupabaseDataService.syncProfile(player.id, player.name, player.avatar);
-      const cloudRoom = await SupabaseDataService.lookupRoom(formattedCode);
-      if (cloudRoom) {
-        room.id = cloudRoom.id;
-        room.hostId = cloudRoom.host_player_id;
-        if (cloudRoom.rules) {
-          room.rules = { ...room.rules, ...cloudRoom.rules };
-        }
-        await SupabaseDataService.joinRoomPlayer(cloudRoom.id, player.id, player.name, player.avatar, false);
-      }
-    }
-
-    await this.initTransport(mode);
-    const connected = await this.transport?.connect(formattedCode, this.localPlayer);
-    if (!connected) {
-      throw new Error('Unable to connect to room');
-    }
-
     this.notifyState();
     return room;
   }
@@ -1404,18 +1539,38 @@ export class MultiplayerSession {
   }
 
   async leaveRoom(): Promise<void> {
-    if (this.transport && this.localPlayer) {
-      if (this.mode === 'ONLINE' && this.room) {
-        SupabaseDataService.leaveRoomPlayer(this.room.id, this.localPlayer.id);
+    const currentCode = this.room?.code || '';
+    const currentMode = this.mode;
+    const currentId = this.localPlayer?.id || '';
+
+    if (this.transport) {
+      if (this.mode === 'ONLINE' && this.room && this.localPlayer) {
+        SupabaseDataService.leaveRoomPlayer(this.room.id, this.localPlayer.id).catch(() => {});
       }
-      await this.transport.broadcastEvent({
-        type: 'PLAYER_LEFT',
-        playerId: this.localPlayer.id,
-      });
-      await this.transport.disconnect();
+      if (this.localPlayer) {
+        await this.transport.broadcastEvent({
+          type: 'PLAYER_LEFT',
+          playerId: this.localPlayer.id,
+        }).catch(() => {});
+      }
+      await this.transport.disconnect().catch(() => {});
     }
+
+    if (__DEV__ && currentCode) {
+      console.log(`[ROOM_LEAVE]\ntransport=${currentMode}\nroomId=${currentCode}\nplayerId=${currentId}`);
+    }
+
     this.room = null;
+    this.localPlayer = null;
     this.transport = null;
+    this.seenCommandIds.clear();
+    this.authoritativeHands.clear();
+    this.authoritativeDeck = [];
+    this.authoritativeDiscard = [];
+    this.authoritativeFinishingOrder = [];
+    this.authoritativeEliminatedOrder = [];
+
+    this.notifyState();
   }
 
   onEvent(callback: (event: GameEvent) => void): () => void {
@@ -1425,11 +1580,11 @@ export class MultiplayerSession {
     };
   }
 
-  onRoomStateChange(callback: (room: MultiplayerRoom) => void): () => void {
-    this.stateListeners.add(callback);
+  onRoomStateChange(callback: (room: MultiplayerRoom | null) => void): () => void {
+    this.stateListeners.add(callback as any);
     if (this.room) callback(this.room);
     return () => {
-      this.stateListeners.delete(callback);
+      this.stateListeners.delete(callback as any);
     };
   }
 
@@ -1448,7 +1603,10 @@ export class MultiplayerSession {
   }
 
   private notifyState() {
-    if (!this.room) return;
+    if (!this.room) {
+      this.stateListeners.forEach(fn => fn(null as any));
+      return;
+    }
     const copy = { ...this.room, players: [...this.room.players] };
     this.stateListeners.forEach(fn => fn(copy));
   }

@@ -270,7 +270,9 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
         if (isPassAndPlay) {
           controller = 'LOCAL_HUMAN';
         } else if (isBotsMode) {
-          controller = idx === 0 ? 'LOCAL_HUMAN' : 'BOT';
+          controller = idx === 0 ? 'LOCAL_HUMAN' : (p.controller || 'BOT');
+        } else if (p.controller) {
+          controller = p.controller;
         } else {
           controller = p.id === localUser?.id ? 'LOCAL_HUMAN' : 'REMOTE_HUMAN';
         }

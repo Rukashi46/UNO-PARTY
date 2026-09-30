@@ -6,7 +6,7 @@ export type MultiplayerMode = 'ONLINE' | 'WLAN' | 'PLAY_BOTS' | 'PASS_AND_PLAY';
 export type ConnectionStatus = 'DISCONNECTED' | 'CONNECTING' | 'CONNECTED' | 'RECONNECTING';
 
 export interface RoomPlayer {
-  id: string;
+  id: string; // Logical playerId (RFC4122 UUID or auth ID)
   name: string;
   avatar: string;
   isHost: boolean;
@@ -14,6 +14,7 @@ export interface RoomPlayer {
   isConnected: boolean;
   cardCount: number;
   controller?: PlayerController;
+  deviceId?: string; // Local installation/device identifier
   isEliminated?: boolean;
   status?: PlayerStatus;
   finishRank?: number;
@@ -34,12 +35,15 @@ export interface MultiplayerRoom {
 export interface NearbyWlanRoom {
   code: string;
   hostName: string;
+  hostPlayerId?: string;
+  roomName?: string;
   playerCount: number;
   maxPlayers: number;
   deckType: DeckType;
   status: 'WAITING' | 'PLAYING';
   hostAddress?: string;
   port?: number;
+  lastSeen?: number;
 }
 
 export type GameCommand =
@@ -131,7 +135,7 @@ export interface PublicMatchState {
 }
 
 export interface MultiplayerTransport {
-  connect(roomCode: string, player: RoomPlayer): Promise<boolean>;
+  connect(roomCode: string, player: RoomPlayer, options?: { hostAddress?: string; port?: number; deviceId?: string }): Promise<boolean>;
   disconnect(): Promise<void>;
   sendCommand(command: GameCommand): Promise<void>;
   broadcastEvent(event: GameEvent): Promise<void>;
