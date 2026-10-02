@@ -217,6 +217,81 @@ class DiagnosticsManager {
     return null;
   }
 
+  logGameTx(command: string, playerId: string, cardId: string, roomId: string) {
+    this.state.lastTx = `${command}:${cardId}`;
+    this.appendLog(`[GAME_TX]\ncommand=${command}\nplayerId=${playerId}\ncardId=${cardId}\nroomId=${roomId}`);
+  }
+
+  logGameRxHost(command: string, playerId: string, cardId: string) {
+    this.state.lastRx = `${command}:${cardId}`;
+    this.appendLog(`[GAME_RX_HOST]\ncommand=${command}\nplayerId=${playerId}\ncardId=${cardId}`);
+  }
+
+  logGameValidate(valid: boolean, reason: string) {
+    this.appendLog(`[GAME_VALIDATE]\nvalid=${valid}\nreason=${reason}`);
+  }
+
+  logGameEngine(action: string, playerId: string) {
+    this.appendLog(`[GAME_ENGINE]\naction=${action}\nplayerId=${playerId}`);
+  }
+
+  logGameStateChanged(revision: number, discardTop: string, currentPlayerId: string, activeColor: string) {
+    this.state.revision = revision;
+    this.appendLog(`[GAME_STATE_CHANGED]\nrevision=${revision}\ndiscardTop=${discardTop}\ncurrentPlayerId=${currentPlayerId}\nactiveColor=${activeColor}`);
+  }
+
+  logGameStateTx(revision: number, discardTop: string, currentPlayerId: string) {
+    this.state.lastTx = `STATE_r${revision}`;
+    this.state.revision = revision;
+    this.appendLog(`[GAME_STATE_TX]\nrevision=${revision}\ndiscardTop=${discardTop}\ncurrentPlayerId=${currentPlayerId}`);
+  }
+
+  logGameStateRx(revision: number, discardTop: string, currentPlayerId: string) {
+    this.state.lastRx = `STATE_r${revision}`;
+    this.state.revision = revision;
+    this.appendLog(`[GAME_STATE_RX]\nrevision=${revision}\ndiscardTop=${discardTop}\ncurrentPlayerId=${currentPlayerId}`);
+  }
+
+  logGameStateApplied(revision: number, discardTop: string, currentPlayerId: string) {
+    this.state.revision = revision;
+    this.appendLog(`[GAME_STATE_APPLIED]\nrevision=${revision}\ndiscardTop=${discardTop}\ncurrentPlayerId=${currentPlayerId}`);
+  }
+
+  logOnlineChannel(roomId: string, channel: string, status: string) {
+    this.state.realtimeStatus = status;
+    this.appendLog(`[ONLINE_CHANNEL]\nroomId=${roomId}\nchannel=${channel}\nstatus=${status}`);
+  }
+
+  logWlanHostStart(roomId: string, playerId: string, localIp: string, port: number) {
+    this.state.roomId = roomId;
+    this.state.playerId = playerId;
+    this.appendLog(`[WLAN_HOST_START]\nroomId=${roomId}\nplayerId=${playerId}\nlocalIp=${localIp}\nport=${port}`);
+  }
+
+  logWlanBeaconStart(roomId: string, localIp: string, port: number) {
+    this.appendLog(`[WLAN_BEACON_START]\nroomId=${roomId}\nlocalIp=${localIp}\nport=${port}`);
+  }
+
+  logWlanBeaconRx(roomId: string, hostPlayerId: string, hostIp: string, hostPort: number) {
+    this.appendLog(`[WLAN_BEACON_RX]\nroomId=${roomId}\nhostPlayerId=${hostPlayerId}\nhostIp=${hostIp}\nhostPort=${hostPort}`);
+  }
+
+  logWlanPingTx(senderId: string, receiverId: string) {
+    this.appendLog(`[WLAN_PING_TX]\nfrom=${senderId}\nto=${receiverId}`);
+  }
+
+  logWlanPingRx(senderId: string, receiverId: string) {
+    this.appendLog(`[WLAN_PING_RX]\nfrom=${senderId}\nto=${receiverId}`);
+  }
+
+  logWlanPongTx(senderId: string, receiverId: string) {
+    this.appendLog(`[WLAN_PONG_TX]\nfrom=${senderId}\nto=${receiverId}`);
+  }
+
+  logWlanPongRx(senderId: string, receiverId: string) {
+    this.appendLog(`[WLAN_PONG_RX]\nfrom=${senderId}\nto=${receiverId}`);
+  }
+
   getState(): DiagnosticsState {
     return { ...this.state };
   }

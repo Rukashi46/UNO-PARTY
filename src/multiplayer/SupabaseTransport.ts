@@ -108,6 +108,7 @@ export class SupabaseTransport implements MultiplayerTransport {
 
         this.channel?.subscribe(status => {
           MPDiagnostics.logRealtime(channelName, status);
+          MPDiagnostics.logOnlineChannel(code, channelName, status);
 
           if (status === 'SUBSCRIBED') {
             clearTimeout(timeout);
@@ -179,6 +180,9 @@ export class SupabaseTransport implements MultiplayerTransport {
       event: 'game_event',
       payload: event,
     });
+
+    // Supabase channel has broadcast.self = false. Notify local listeners on Host immediately!
+    this.notifyEvent(event);
   }
 
   onEvent(callback: (event: GameEvent | any) => void): () => void {

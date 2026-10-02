@@ -114,6 +114,20 @@ export type GameEvent =
   | { type: 'PLAYER_FINISHED'; playerId: string; rank: number; finishingOrder: string[]; revision: number }
   | { type: 'PLAYER_WON'; winnerId: string; winnerName: string; finishingOrder?: string[]; finalResults?: any[]; revision: number }
   | { type: 'MATCH_FINISHED'; finishingOrder?: string[]; finalResults?: any[]; revision?: number }
+  | {
+      type: 'GAME_STATE_UPDATE';
+      revision: number;
+      roomId: string;
+      discardTop: UnoCard | null;
+      discardPile: UnoCard[];
+      activeColor: UnoColor;
+      currentPlayerId: string;
+      direction: 'CW' | 'CCW';
+      pendingDrawStack: number;
+      players: RoomPlayer[];
+      playedCard?: UnoCard;
+      playerWhoPlayed?: string;
+    }
   | { type: 'SYNC_STATE'; state: PublicMatchState; privateHand?: UnoCard[] };
 
 export interface PublicMatchState {

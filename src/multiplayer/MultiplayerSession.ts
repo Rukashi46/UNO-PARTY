@@ -41,6 +41,10 @@ export class MultiplayerSession {
   private authoritativeFinishingOrder: string[] = [];
   private authoritativeEliminatedOrder: string[] = [];
 
+  // Local client cache of private hand & public match state
+  private localPrivateHand: UnoCard[] = [];
+  private publicMatchState: PublicMatchState | null = null;
+
   // Deduplication & Stale Command Protection (Parts 20 & 35)
   private seenCommandIds: Set<string> = new Set();
 
@@ -70,6 +74,39 @@ export class MultiplayerSession {
 
   getRevision(): number {
     return this.authoritativeRevision;
+  }
+
+  getAuthoritativeDiscard(): UnoCard[] {
+    return [...this.authoritativeDiscard];
+  }
+
+  getAuthoritativeTopCard(): UnoCard | null {
+    return this.authoritativeDiscard[this.authoritativeDiscard.length - 1] || null;
+  }
+
+  getAuthoritativeActiveColor(): UnoColor {
+    return this.authoritativeActiveColor;
+  }
+
+  getAuthoritativeDirection(): 'CW' | 'CCW' {
+    return this.authoritativeDirection;
+  }
+
+  getAuthoritativePendingDraw(): number {
+    return this.authoritativePendingDraw;
+  }
+
+  getAuthoritativeCurrentPlayerId(): string {
+    if (!this.room || !this.room.players || this.room.players.length === 0) return '';
+    const curPlayer = this.room.players[this.authoritativeCurrentIndex];
+    return curPlayer ? curPlayer.id : this.room.players[0].id;
+  }
+
+  getLocalPrivateHand(): UnoCard[] {
+    if (this.isHost() && this.localPlayer) {
+      return [...(this.authoritativeHands.get(this.localPlayer.id) || [])];
+    }
+    return [...this.localPrivateHand];
   }
 
   async scanNearbyWlanRooms(): Promise<NearbyWlanRoom[]> {
@@ -587,11 +624,30 @@ export class MultiplayerSession {
       revision: this.authoritativeRevision,
     };
 
+    const localHand = hands.get(this.localPlayer?.id || '') || [];
+    this.localPrivateHand = localHand;
+    this.publicMatchState = publicState;
+
+    // Broadcast initial GAME_STATE_UPDATE
+    MPDiagnostics.logGameStateTx(this.authoritativeRevision, `${top.color}_${top.value}`, publicState.currentPlayerId);
+    await this.transport?.broadcastEvent({
+      type: 'GAME_STATE_UPDATE',
+      revision: this.authoritativeRevision,
+      roomId: this.room.code,
+      discardTop: top,
+      discardPile: [top],
+      activeColor: top.color,
+      currentPlayerId: publicState.currentPlayerId,
+      direction: 'CW',
+      pendingDrawStack: 0,
+      players: [...this.room.players],
+    });
+
     // Broadcast MATCH_STARTED
     await this.transport?.broadcastEvent({
       type: 'MATCH_STARTED',
       initialPublicState: publicState,
-      privateHand: hands.get(this.localPlayer?.id || '') || [],
+      privateHand: localHand,
     });
 
     // Send private hands securely to each joined player (Part 28)
@@ -608,7 +664,7 @@ export class MultiplayerSession {
     this.notifyState();
     return {
       initialPublicState: publicState,
-      privateHand: hands.get(this.localPlayer?.id || '') || [],
+      privateHand: localHand,
     };
   }
 
@@ -813,9 +869,14 @@ export class MultiplayerSession {
     // Execute Command Logic
     switch (command.type) {
       case 'PLAY_CARD': {
+        MPDiagnostics.logGameRxHost('PLAY_CARD', command.playerId, command.cardId);
+
         const hand = this.authoritativeHands.get(command.playerId) || [];
         const cardIndex = hand.findIndex(c => c.id === command.cardId);
-        if (cardIndex === -1) return;
+        if (cardIndex === -1) {
+          MPDiagnostics.logGameValidate(false, `Card ${command.cardId} not found in player hand (hand size ${hand.length})`);
+          return;
+        }
 
         const card = hand[cardIndex];
         const topCard = this.authoritativeDiscard[this.authoritativeDiscard.length - 1] || null;
@@ -829,7 +890,10 @@ export class MultiplayerSession {
           this.room.rules
         );
 
+        MPDiagnostics.logGameValidate(canPlay, canPlay ? 'OK' : 'INVALID_MATCH');
         if (!canPlay) return;
+
+        MPDiagnostics.logGameEngine('PLAY_CARD', command.playerId);
 
         // Remove card from hand
         hand.splice(cardIndex, 1);
@@ -1453,8 +1517,40 @@ export class MultiplayerSession {
     this.broadcastTurnChange();
   }
 
-  private async broadcastTurnChange() {
+  private async broadcastTurnChange(playedCard?: UnoCard, playerWhoPlayed?: string) {
     const nextPlayer = this.room!.players[this.authoritativeCurrentIndex];
+    const topCard = this.authoritativeDiscard[this.authoritativeDiscard.length - 1] || null;
+    const discardTopStr = topCard ? `${topCard.color}_${topCard.value}` : 'NONE';
+
+    MPDiagnostics.logGameStateChanged(
+      this.authoritativeRevision,
+      discardTopStr,
+      nextPlayer.id,
+      this.authoritativeActiveColor
+    );
+
+    MPDiagnostics.logGameStateTx(
+      this.authoritativeRevision,
+      discardTopStr,
+      nextPlayer.id
+    );
+
+    // Broadcast GAME_STATE_UPDATE to ensure all devices apply authoritative state
+    await this.transport?.broadcastEvent({
+      type: 'GAME_STATE_UPDATE',
+      revision: this.authoritativeRevision,
+      roomId: this.room!.code,
+      discardTop: topCard,
+      discardPile: [...this.authoritativeDiscard],
+      activeColor: this.authoritativeActiveColor,
+      currentPlayerId: nextPlayer.id,
+      direction: this.authoritativeDirection,
+      pendingDrawStack: this.authoritativePendingDraw,
+      players: [...this.room!.players],
+      playedCard,
+      playerWhoPlayed,
+    });
+
     await this.transport?.broadcastEvent({
       type: 'TURN_CHANGED',
       nextPlayerId: nextPlayer.id,
@@ -1642,6 +1738,73 @@ export class MultiplayerSession {
 
       case 'MATCH_STARTED': {
         this.room.status = 'PLAYING';
+        if (event.initialPublicState) {
+          this.publicMatchState = event.initialPublicState;
+          if (event.initialPublicState.discardPile) {
+            this.authoritativeDiscard = [...event.initialPublicState.discardPile];
+          } else if (event.initialPublicState.topCard) {
+            this.authoritativeDiscard = [event.initialPublicState.topCard];
+          }
+          if (event.initialPublicState.activeColor) {
+            this.authoritativeActiveColor = event.initialPublicState.activeColor;
+          }
+          if (event.initialPublicState.direction) {
+            this.authoritativeDirection = event.initialPublicState.direction;
+          }
+          if (typeof event.initialPublicState.pendingDrawStack === 'number') {
+            this.authoritativePendingDraw = event.initialPublicState.pendingDrawStack;
+          }
+        }
+        if (event.privateHand && Array.isArray(event.privateHand) && event.privateHand.length > 0) {
+          this.localPrivateHand = event.privateHand;
+        }
+        this.notifyState();
+        break;
+      }
+
+      case 'PRIVATE_HAND_UPDATE': {
+        if (event.playerId === this.localPlayer?.id && Array.isArray(event.hand)) {
+          this.localPrivateHand = [...event.hand];
+        }
+        break;
+      }
+
+      case 'GAME_STATE_UPDATE': {
+        const discardTopStr = event.discardTop ? `${event.discardTop.color}_${event.discardTop.value}` : 'NONE';
+        MPDiagnostics.logGameStateRx(event.revision, discardTopStr, event.currentPlayerId);
+
+        // Apply authoritative state
+        if (event.discardPile && Array.isArray(event.discardPile)) {
+          this.authoritativeDiscard = [...event.discardPile];
+        } else if (event.discardTop) {
+          this.authoritativeDiscard = [event.discardTop];
+        }
+        if (event.activeColor) {
+          this.authoritativeActiveColor = event.activeColor;
+        }
+        if (event.direction) {
+          this.authoritativeDirection = event.direction;
+        }
+        if (typeof event.pendingDrawStack === 'number') {
+          this.authoritativePendingDraw = event.pendingDrawStack;
+        }
+        if (event.players && Array.isArray(event.players)) {
+          this.room.players = event.players.map((p: any) => ({
+            ...p,
+            controller: p.id === this.localPlayer?.id ? 'LOCAL_HUMAN' : 'REMOTE_HUMAN',
+          }));
+          const curIdx = this.room.players.findIndex(p => p.id === event.currentPlayerId);
+          if (curIdx !== -1) {
+            this.authoritativeCurrentIndex = curIdx;
+          }
+        }
+
+        // If card was played by local player, remove it from localPrivateHand if present
+        if (event.playedCard && event.playerWhoPlayed === this.localPlayer?.id) {
+          this.localPrivateHand = this.localPrivateHand.filter(c => c.id !== event.playedCard.id);
+        }
+
+        MPDiagnostics.logGameStateApplied(event.revision, discardTopStr, event.currentPlayerId);
         this.notifyState();
         break;
       }

@@ -162,7 +162,9 @@ export class WlanTransport implements MultiplayerTransport {
 
     if (msg.type === 'PING') {
       MPDiagnostics.logCommandReceived(this.roomCode, msg.senderPlayerId, 'ping', 'PING');
+      MPDiagnostics.logWlanPingRx(msg.senderPlayerId, this.localPlayer?.id || 'HOST');
       // Respond with PONG
+      MPDiagnostics.logWlanPongTx(this.localPlayer?.id || 'HOST', msg.senderPlayerId);
       this.sendToNativeClient(clientId, {
         type: 'PONG',
         roomId: this.roomCode,
@@ -175,6 +177,7 @@ export class WlanTransport implements MultiplayerTransport {
     if (msg.type === 'PONG') {
       MPDiagnostics.recordPongReceived();
       MPDiagnostics.logCommandReceived(this.roomCode, msg.senderPlayerId, 'pong', 'PONG');
+      MPDiagnostics.logWlanPongRx(msg.senderPlayerId, this.localPlayer?.id || 'HOST');
       return;
     }
 
@@ -472,9 +475,12 @@ export class WlanTransport implements MultiplayerTransport {
             } else if (data.type === 'PONG') {
               MPDiagnostics.recordPongReceived();
               MPDiagnostics.logCommandReceived(formattedCode, data.senderPlayerId, 'pong', 'PONG');
+              MPDiagnostics.logWlanPongRx(data.senderPlayerId, player.id);
             } else if (data.type === 'PING') {
               // Respond to Host Ping
               MPDiagnostics.logCommandReceived(formattedCode, data.senderPlayerId, 'ping', 'PING');
+              MPDiagnostics.logWlanPingRx(data.senderPlayerId, player.id);
+              MPDiagnostics.logWlanPongTx(player.id, data.senderPlayerId);
               this.socket?.send(JSON.stringify({
                 type: 'PONG',
                 roomId: formattedCode,
@@ -562,6 +568,7 @@ export class WlanTransport implements MultiplayerTransport {
       timestamp: Date.now(),
     };
     MPDiagnostics.logCommandSend(this.roomCode, this.localPlayer.id, 'ping', 'PING');
+    MPDiagnostics.logWlanPingTx(this.localPlayer.id, this.isHost ? 'CLIENTS' : 'HOST');
 
     if (this.isHost) {
       this.broadcastToNativeClients(payload);

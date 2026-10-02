@@ -24,6 +24,7 @@ import { COLORS, COLOR_MAP } from '../constants/theme';
 import { NativeEffectsService } from '../services/NativeEffects';
 import { MultiplayerSession } from '../multiplayer/MultiplayerSession';
 import { MultiplayerDiagnosticsPanel } from '../components/gameplay/MultiplayerDiagnosticsPanel';
+import { MPDiagnostics } from '../services/MultiplayerDiagnosticsService';
 
 export type ActionLockState =
   | 'IDLE'
@@ -265,6 +266,77 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
     }
 
     let initialPlayersList: Player[] = [];
+    const isMultiplayer = activeRoom?.mode === 'ONLINE' || activeRoom?.mode === 'WLAN';
+
+    if (isMultiplayer) {
+      const authDiscard = session.getAuthoritativeDiscard();
+      const authTop = authDiscard[authDiscard.length - 1] || top || { id: 'default_start', color: 'RED', value: '7' };
+      const authColor = session.getAuthoritativeActiveColor() || authTop.color;
+      const authDirection = session.getAuthoritativeDirection() || 'CW';
+      const authPendingDraw = session.getAuthoritativePendingDraw() || 0;
+      const myPrivateHand = session.getLocalPrivateHand();
+
+      initialPlayersList = (activeRoom.players || []).map(p => {
+        const isLocal = p.id === localUser?.id;
+        const controller: PlayerController = isLocal ? 'LOCAL_HUMAN' : 'REMOTE_HUMAN';
+        return {
+          id: p.id,
+          name: p.name,
+          avatar: p.avatar,
+          isHuman: true,
+          playerType: 'HUMAN',
+          controller,
+          hand: isLocal ? (myPrivateHand.length > 0 ? myPrivateHand : newDeck.splice(0, 7)) : [],
+          cardCount: isLocal ? (myPrivateHand.length > 0 ? myPrivateHand.length : 7) : (p.cardCount || 7),
+          isHost: p.isHost,
+          status: (p.status || 'ACTIVE') as PlayerStatus,
+          finishRank: p.finishRank,
+          isEliminated: Boolean(p.isEliminated),
+        };
+      });
+
+      setAllPlayers(initialPlayersList);
+      allPlayersRef.current = initialPlayersList;
+
+      setDiscardPile(authDiscard.length > 0 ? authDiscard : [authTop]);
+      setActiveColor(authColor);
+      activeColorRef.current = authColor;
+      setPlayDirection(authDirection);
+      playDirectionRef.current = authDirection;
+      setPendingDrawStack(authPendingDraw);
+      pendingDrawStackRef.current = authPendingDraw;
+
+      const authCurId = session.getAuthoritativeCurrentPlayerId();
+      const curIdx = initialPlayersList.findIndex(p => p.id === authCurId);
+      const effectiveIndex = curIdx !== -1 ? curIdx : 0;
+      setCurrentPlayerIndex(effectiveIndex);
+      currentPlayerIndexRef.current = effectiveIndex;
+
+      const activeP = initialPlayersList[effectiveIndex];
+      const isMyTurnNow = activeP?.id === localUser?.id;
+      setActionLock(isMyTurnNow ? 'IDLE' : 'WAITING_FOR_REMOTE_PLAYER');
+
+      setAnnouncement({
+        text: 'Top card revealed: ',
+        highlight: `${authTop.color} ${authTop.value}`,
+        color: COLOR_MAP[authTop.color] || COLORS.unoYellow,
+      });
+
+      setDeck(newDeck);
+      setHasDrawnThisTurn(false);
+      setSelectedCardId(null);
+      setHasCalledUno(false);
+      setWinner(null);
+      setHandoffTarget(null);
+      setTurnId(session.getRevision() || 1);
+      turnIdRef.current = session.getRevision() || 1;
+      setTurnPhase('WAITING_FOR_ACTION');
+      turnPhaseRef.current = 'WAITING_FOR_ACTION';
+      pendingChoiceRef.current = null;
+      pendingEffectRef.current = false;
+      return;
+    }
+
     if (activeRoom && activeRoom.players.length > 0) {
       initialPlayersList = activeRoom.players.map((p, idx) => {
         let controller: PlayerController = 'REMOTE_HUMAN';
@@ -569,6 +641,63 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
 
         case 'UNO_CALLED': {
           showToast('UNO!', 'Player called UNO! 🔥', 'success');
+          break;
+        }
+
+        case 'GAME_STATE_UPDATE': {
+          const targetIndex = allPlayersRef.current.findIndex(p => p.id === event.currentPlayerId);
+          const newIndex = targetIndex !== -1 ? targetIndex : 0;
+          const targetPlayer = allPlayersRef.current[newIndex];
+          const isMe = targetPlayer?.controller === 'LOCAL_HUMAN' || targetPlayer?.id === localUser?.id;
+
+          if (event.discardPile && Array.isArray(event.discardPile)) {
+            setDiscardPile([...event.discardPile]);
+          } else if (event.discardTop) {
+            const topCard = event.discardTop;
+            setDiscardPile(prev => [...prev, topCard]);
+          }
+
+          setActiveColor(event.activeColor);
+          activeColorRef.current = event.activeColor;
+          setPlayDirection(event.direction);
+          playDirectionRef.current = event.direction;
+          setPendingDrawStack(event.pendingDrawStack);
+          pendingDrawStackRef.current = event.pendingDrawStack;
+
+          setCurrentPlayerIndex(newIndex);
+          currentPlayerIndexRef.current = newIndex;
+
+          const nextTurn = (event.revision || turnIdRef.current) + 1;
+          setTurnId(nextTurn);
+          turnIdRef.current = nextTurn;
+
+          // Update card counts from event.players if available
+          if (event.players && Array.isArray(event.players)) {
+            setAllPlayers(prev => {
+              const next = prev.map(p => {
+                const rp = event.players.find((ep: any) => ep.id === p.id);
+                return rp && typeof rp.cardCount === 'number' ? { ...p, cardCount: rp.cardCount } : p;
+              });
+              allPlayersRef.current = next;
+              return next;
+            });
+          }
+
+          if (isMe) {
+            setActionLock('IDLE');
+            NativeEffectsService.triggerTurnChange();
+          } else {
+            setActionLock('WAITING_FOR_REMOTE_PLAYER');
+          }
+
+          if (event.playedCard && event.playerWhoPlayed !== localUser?.id) {
+            NativeEffectsService.triggerCardPlay();
+            setAnnouncement({
+              text: 'Opponent played: ',
+              highlight: `${event.activeColor} ${event.playedCard.value.replace(/_/g, ' ')}`,
+              color: COLOR_MAP[event.activeColor] || COLORS.unoYellow,
+            });
+          }
           break;
         }
 
@@ -1582,11 +1711,19 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
         });
 
         NativeEffectsService.triggerCardPlay();
-        advanceToNextActivePlayer({ playedCard: card, newActiveColor: finalColor, stepMultiplier: extraSkips ? 1 + extraSkips : undefined, reason: 'COMMIT_PLAY' });
-        session.playCard(card.id, finalColor);
+
+        const isMultiplayer = activeRoom?.mode === 'ONLINE' || activeRoom?.mode === 'WLAN';
+        if (isMultiplayer) {
+          MPDiagnostics.logGameTx('PLAY_CARD', curPlayer?.id || '', card.id, activeRoom.code);
+          setActionLock('WAITING_FOR_REMOTE_PLAYER');
+          session.playCard(card.id, finalColor);
+        } else {
+          advanceToNextActivePlayer({ playedCard: card, newActiveColor: finalColor, stepMultiplier: extraSkips ? 1 + extraSkips : undefined, reason: 'COMMIT_PLAY' });
+          session.playCard(card.id, finalColor);
+        }
       };
     },
-    [hasCalledUno, showToast, advanceToNextActivePlayer, session, rules]
+    [hasCalledUno, showToast, advanceToNextActivePlayer, session, rules, activeRoom]
   );
 
   // Dedicated Shuffle Hands Logic (Used identically by Dedicated Shuffle Hands & Custom Wild)
