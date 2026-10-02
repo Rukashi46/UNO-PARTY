@@ -19,6 +19,10 @@ const SUPABASE_ANON_KEY =
 
 let clientInstance: SupabaseClient | null = null;
 
+if (__DEV__) {
+  console.log(`[SUPABASE_INIT]\nSUPABASE_URL_PRESENT=${Boolean(SUPABASE_URL)}\nSUPABASE_ANON_KEY_PRESENT=${Boolean(SUPABASE_ANON_KEY)}`);
+}
+
 // Safe Storage adapter for Supabase Auth to prevent AsyncStorage unlinked exceptions
 const SupabaseAuthStorage = {
   getItem: async (key: string): Promise<string | null> => {

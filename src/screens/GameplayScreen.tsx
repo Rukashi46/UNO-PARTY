@@ -23,6 +23,7 @@ import { getPlayerLayout, getSingleOpponentLayout } from '../game/ResponsiveTabl
 import { COLORS, COLOR_MAP } from '../constants/theme';
 import { NativeEffectsService } from '../services/NativeEffects';
 import { MultiplayerSession } from '../multiplayer/MultiplayerSession';
+import { MultiplayerDiagnosticsPanel } from '../components/gameplay/MultiplayerDiagnosticsPanel';
 
 export type ActionLockState =
   | 'IDLE'
@@ -642,6 +643,14 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
   const localUser = session.getLocalPlayer();
   const activePlayer = allPlayers[currentPlayerIndex];
 
+  const myPlayer = isPassAndPlay
+    ? activePlayer
+    : (allPlayers.find(p => p.id === localUser?.id) || allPlayers[0]);
+  const isMyPlayerFinished = Boolean(
+    myPlayer && (myPlayer.status === 'FINISHED' || (myPlayer.finishRank !== undefined && myPlayer.cardCount === 0))
+  );
+  const isMyPlayerEliminated = Boolean(myPlayer && (myPlayer.status === 'ELIMINATED' || myPlayer.isEliminated));
+
   const myHand = (isPassAndPlay
     ? activePlayer?.hand
     : (allPlayers.find(p => p.id === localUser?.id)?.hand || allPlayers[0]?.hand)) || [];
@@ -651,6 +660,8 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
     : allPlayers.filter(p => p.id !== (localUser?.id || allPlayers[0]?.id));
 
   const isMyTurn =
+    !isMyPlayerFinished &&
+    !isMyPlayerEliminated &&
     (isPassAndPlay
       ? activePlayer?.controller === 'LOCAL_HUMAN'
       : (activePlayer?.id === localUser?.id || (!localUser && currentPlayerIndex === 0)) &&
@@ -837,8 +848,8 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
               }
             }
 
-            // Normal bot play or draw
-            const willPlayCard = Math.random() > 0.35 && bot.cardCount > 1;
+            // Normal bot play or draw - allow bots with 1 card to play and finish!
+            const willPlayCard = (bot.cardCount === 1 ? Math.random() > 0.15 : Math.random() > 0.35) && bot.cardCount >= 1;
 
             if (willPlayCard) {
               const botColors: UnoColor[] = ['RED', 'YELLOW', 'GREEN', 'BLUE'];
@@ -891,7 +902,7 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
               if (evalResult.isMatchOver) {
                 setFinalResults(evalResult.finalResults);
                 const w = evalResult.winner || bot;
-                setWinner({ name: w.name, avatar: w.avatar, isHuman: false });
+                setWinner({ name: w.name, avatar: w.avatar, isHuman: w.isHuman ?? false });
                 setActionLock('GAME_OVER');
                 return validDeck;
               }
@@ -978,6 +989,36 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
                     allPlayersRef.current = next;
                     return next;
                   });
+
+                  // Evaluate bot completion via authoritative engine
+                  const evalResult = UnoGameEngine.evaluatePlayerCompletion(
+                    allPlayersRef.current,
+                    rules,
+                    finishingOrderRef.current,
+                    eliminatedOrderRef.current
+                  );
+
+                  finishingOrderRef.current = evalResult.finishingOrder;
+                  eliminatedOrderRef.current = evalResult.eliminatedOrder;
+                  setFinishingOrder(evalResult.finishingOrder);
+                  setEliminatedOrder(evalResult.eliminatedOrder);
+
+                  allPlayersRef.current = evalResult.updatedPlayers;
+                  setAllPlayers(evalResult.updatedPlayers);
+
+                  if (evalResult.justFinishedPlayerId) {
+                    const finisher = evalResult.updatedPlayers.find(p => p.id === evalResult.justFinishedPlayerId);
+                    showToast('FINISHED!', `${finisher?.name || 'Bot'} finished in position #${finisher?.finishRank || 1}!`, 'success');
+                  }
+
+                  if (evalResult.isMatchOver) {
+                    setFinalResults(evalResult.finalResults);
+                    const w = evalResult.winner || bot;
+                    setWinner({ name: w.name, avatar: w.avatar, isHuman: w.isHuman ?? false });
+                    setActionLock('GAME_OVER');
+                    return;
+                  }
+
                   setAnnouncement({
                     text: `${bot.name} played drawn card: `,
                     highlight: `${chosenColor} ${drawnCard.value.replace(/_/g, ' ')}`,
@@ -1047,14 +1088,16 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
         playDirectionRef.current = currentDir;
       }
 
+      const curIdx = currentPlayerIndexRef.current;
+      const fromPlayer = allPlayersRef.current[curIdx];
+
       if (playedCard?.value === 'SKIP') {
         stepMultiplier = 2;
       } else if (playedCard?.value === 'SKIP_EVERYONE') {
-        stepMultiplier = 0; // Card player takes another turn immediately!
+        // Card player takes another turn immediately UNLESS they just emptied their hand and finished!
+        const isFromPlayerFinished = fromPlayer && (fromPlayer.status === 'FINISHED' || fromPlayer.status === 'ELIMINATED' || fromPlayer.isEliminated || fromPlayer.cardCount === 0);
+        stepMultiplier = isFromPlayerFinished ? 1 : 0;
       }
-
-      const curIdx = currentPlayerIndexRef.current;
-      const fromPlayer = allPlayersRef.current[curIdx];
 
       const nextIndex = UnoGameEngine.getNextActivePlayerIndex(
         allPlayersRef.current,
@@ -2043,6 +2086,7 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
 
   return (
     <GameplayViewport>
+      {__DEV__ && <MultiplayerDiagnosticsPanel />}
       {/* Table Oval with Circular Animated Direction Indicator */}
       <View style={styles.tableCenter}>
         <NativeGameTable direction={playDirection} activeColor={activeColor} />
@@ -2055,7 +2099,11 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
             {activeRoom?.mode === 'WLAN' ? '📡' : activeRoom?.mode === 'ONLINE' ? '🌐' : '⏱'}
           </Text>
           <Text style={styles.timerText}>
-            {isMyTurn
+            {isMyPlayerFinished
+              ? `YOU FINISHED #${myPlayer?.finishRank || 1}! SPECTATING...`
+              : isMyPlayerEliminated
+              ? 'YOU ARE ELIMINATED! SPECTATING...'
+              : isMyTurn
               ? (pendingDrawStack > 0
                   ? (isPassAndPlay ? `${allPlayers[currentPlayerIndex]?.name?.toUpperCase()}'S TURN (+${pendingDrawStack} STACK!)` : `YOUR TURN (+${pendingDrawStack} STACK!)`)
                   : (isPassAndPlay ? `${allPlayers[currentPlayerIndex]?.name?.toUpperCase()}'S TURN` : 'YOUR TURN'))
@@ -2125,37 +2173,53 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
         );
       })}
 
-      {/* Bottom Center: Player Hand with TWO-TAP Confirmation */}
-      <View style={styles.bottomHand}>
-        <NativePlayerHandFan
-          hand={myHand}
-          topCard={topCard}
-          activeColor={activeColor}
-          pendingDrawStack={pendingDrawStack}
-          rules={rules}
-          isMyTurn={isMyTurn}
-          playerName={isPassAndPlay ? activePlayer?.name : (session.getLocalPlayer()?.name || activePlayer?.name || 'Player')}
-          avatar={isPassAndPlay ? activePlayer?.avatar : (session.getLocalPlayer()?.avatar || activePlayer?.avatar || '👤')}
-          selectedCardId={selectedCardId}
-          onSelectCard={card => setSelectedCardId(card ? card.id : null)}
-          onPlayCard={handlePlayCard}
-          onInvalidAttempt={(_, reason) => showToast('INVALID PLAY', reason, 'warning')}
-          disabled={!isMyTurn || actionLock !== 'IDLE'}
-        />
-      </View>
+      {/* Bottom Center: Player Hand or Spectator Banner */}
+      {isMyPlayerFinished && !isPassAndPlay ? (
+        <View style={styles.spectatorCard}>
+          <Text style={styles.spectatorTrophy}>🏁</Text>
+          <Text style={styles.spectatorTitle}>
+            YOU FINISHED IN POSITION #{myPlayer?.finishRank || 1}!
+          </Text>
+          <Text style={styles.spectatorSubtitle}>
+            {rules.gameEndMode === 'PLAY_UNTIL_LAST_PLAYER'
+              ? 'Play Until Last Player: Remaining players are battling for rank positions.'
+              : 'Match is concluding...'}
+          </Text>
+        </View>
+      ) : (
+        <>
+          <View style={styles.bottomHand}>
+            <NativePlayerHandFan
+              hand={myHand}
+              topCard={topCard}
+              activeColor={activeColor}
+              pendingDrawStack={pendingDrawStack}
+              rules={rules}
+              isMyTurn={isMyTurn}
+              playerName={isPassAndPlay ? activePlayer?.name : (session.getLocalPlayer()?.name || activePlayer?.name || 'Player')}
+              avatar={isPassAndPlay ? activePlayer?.avatar : (session.getLocalPlayer()?.avatar || activePlayer?.avatar || '👤')}
+              selectedCardId={selectedCardId}
+              onSelectCard={card => setSelectedCardId(card ? card.id : null)}
+              onPlayCard={handlePlayCard}
+              onInvalidAttempt={(_, reason) => showToast('INVALID PLAY', reason, 'warning')}
+              disabled={!isMyTurn || actionLock !== 'IDLE'}
+            />
+          </View>
 
-      {/* Bottom Corner Action Controls */}
-      <View style={styles.bottomActions}>
-        <NativeActionControls
-          canDraw={isMyTurn && !hasDrawnThisTurn && actionLock === 'IDLE'}
-          canEndTurn={isMyTurn && hasDrawnThisTurn && actionLock === 'IDLE'}
-          hasUnoAlert={myHand.length === 2 || myHand.length === 1}
-          onDraw={handleDrawCard}
-          onCallUno={handleCallUno}
-          onEndTurn={handleEndTurn}
-          disabled={!isMyTurn || actionLock !== 'IDLE'}
-        />
-      </View>
+          {/* Bottom Corner Action Controls */}
+          <View style={styles.bottomActions}>
+            <NativeActionControls
+              canDraw={isMyTurn && !hasDrawnThisTurn && actionLock === 'IDLE'}
+              canEndTurn={isMyTurn && hasDrawnThisTurn && actionLock === 'IDLE'}
+              hasUnoAlert={myHand.length === 2 || myHand.length === 1}
+              onDraw={handleDrawCard}
+              onCallUno={handleCallUno}
+              onEndTurn={handleEndTurn}
+              disabled={!isMyTurn || actionLock !== 'IDLE'}
+            />
+          </View>
+        </>
+      )}
 
       {/* Flight Card Animation */}
       <AnimatedFlightCard
@@ -2443,5 +2507,42 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     color: '#0F172A',
     letterSpacing: 1,
+  },
+  spectatorCard: {
+    position: 'absolute',
+    bottom: 24,
+    left: '50%',
+    marginLeft: -260,
+    width: 520,
+    backgroundColor: 'rgba(15, 23, 42, 0.95)',
+    borderRadius: 20,
+    paddingVertical: 18,
+    paddingHorizontal: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1.5,
+    borderColor: 'rgba(234, 179, 8, 0.5)',
+    shadowColor: '#EAB308',
+    shadowOpacity: 0.35,
+    shadowRadius: 16,
+    elevation: 10,
+  },
+  spectatorTrophy: {
+    fontSize: 32,
+    marginBottom: 6,
+  },
+  spectatorTitle: {
+    color: '#FACC15',
+    fontSize: 16,
+    fontWeight: '900',
+    letterSpacing: 0.5,
+    marginBottom: 4,
+    textAlign: 'center',
+  },
+  spectatorSubtitle: {
+    color: '#94A3B8',
+    fontSize: 12,
+    fontWeight: '500',
+    textAlign: 'center',
   },
 });

@@ -396,7 +396,7 @@ function isCardPlayable(card, topCard, activeColor) {
 // Simulates authoritative engine draw turn resolution
 function simulateDrawTurn({ playerHand, cardToDraw, topCard, activeColor, pendingDrawStack, currentTurnIndex, totalPlayers }) {
   const isPenalty = pendingDrawStack > 0;
-  
+
   if (isPenalty) {
     // Penalty resolution: add all penalty cards, reset stack, advance turn automatically
     const updatedHand = [...playerHand];
@@ -417,10 +417,10 @@ function simulateDrawTurn({ playerHand, cardToDraw, topCard, activeColor, pendin
   // Normal 1-card draw:
   // Step 1: Exactly 1 card drawn & committed to hand
   const updatedHand = [...playerHand, cardToDraw];
-  
+
   // Step 2: Check if newly drawn card is legally playable
   const playable = isCardPlayable(cardToDraw, topCard, activeColor);
-  
+
   if (!playable) {
     // Unplayable: automatically advance turn, End Turn not required
     const nextTurnIndex = (currentTurnIndex + 1) % totalPlayers;

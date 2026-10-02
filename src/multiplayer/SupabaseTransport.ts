@@ -7,52 +7,52 @@ import {
   GameCommand,
   GameEvent,
 } from './types';
+import { MPDiagnostics } from '../services/MultiplayerDiagnosticsService';
 
 export class SupabaseTransport implements MultiplayerTransport {
   private channel: RealtimeChannel | null = null;
   private connectionStatus: ConnectionStatus = 'DISCONNECTED';
-  private eventListeners: Set<(event: GameEvent) => void> = new Set();
+  private eventListeners: Set<(event: GameEvent | any) => void> = new Set();
   private statusListeners: Set<(status: ConnectionStatus) => void> = new Set();
   private roomCode: string = '';
   private localPlayer: RoomPlayer | null = null;
 
   async connect(roomCode: string, player: RoomPlayer): Promise<boolean> {
-    this.roomCode = roomCode;
+    const code = roomCode.toUpperCase().trim();
+    this.roomCode = code;
     this.localPlayer = player;
     this.setConnectionStatus('CONNECTING');
 
+    MPDiagnostics.logTransportStart('ONLINE', 'CONNECTING');
+    MPDiagnostics.logConnectStart('ONLINE', code);
+
     if (!isSupabaseConfigured()) {
       console.warn('[SupabaseTransport] Supabase credentials not configured in environment.');
+      MPDiagnostics.logConnectFailure('ONLINE', code, 'MISSING_CREDENTIALS', 'ENV_NOT_SET');
       this.setConnectionStatus('DISCONNECTED');
       return false;
     }
 
     try {
       const supabase = getSupabaseClient();
-      const code = roomCode.toUpperCase().trim();
       const channelName = `uno-room:${code}`;
-      const role = player.isHost ? 'HOST' : 'CLIENT';
-
-      if (__DEV__) {
-        console.log(`[ONLINE_ROOM]\nroomId=${code}\nchannel=${channelName}\nplayerId=${player.id}\nrole=${role}`);
-      }
 
       // Clean up previous channel if any
       if (this.channel) {
         await supabase.removeChannel(this.channel);
+        this.channel = null;
       }
 
       this.channel = supabase.channel(channelName, {
         config: {
           presence: { key: player.id },
-          broadcast: { self: false, ack: false },
+          broadcast: { self: false, ack: true },
         },
       });
 
-      // 1. Presence Sync (Who is connected/ready)
+      // 1. Presence Sync
       this.channel.on('presence', { event: 'sync' }, () => {
         const state = this.channel?.presenceState() || {};
-        // Find joined players
         Object.keys(state).forEach(key => {
           const presenceList = state[key] as any[];
           if (presenceList && presenceList.length > 0) {
@@ -81,59 +81,69 @@ export class SupabaseTransport implements MultiplayerTransport {
       // 2. Broadcast for Game Events and Commands
       this.channel.on('broadcast', { event: 'game_event' }, ({ payload }) => {
         if (payload) {
-          this.notifyEvent(payload as GameEvent);
+          if (payload.type === 'TEST_STATE' || payload.type === 'SYNC_STATE' || payload.revision !== undefined) {
+            MPDiagnostics.logStateReceived(code, payload.revision || 1);
+          }
+          this.notifyEvent(payload);
         }
       });
 
       this.channel.on('broadcast', { event: 'game_command' }, ({ payload }) => {
-        // Handled if local player is host
         if (payload) {
-          this.notifyEvent(payload as any);
+          MPDiagnostics.logCommandReceived(code, payload.playerId || 'UNKNOWN', payload.commandId || '', payload.type || 'COMMAND');
+          this.notifyEvent(payload);
         }
       });
 
-      // Subscribe to channel
+      // Phase 5: Explicit subscription status tracking
+      MPDiagnostics.logRealtime(channelName, 'SUBSCRIBING');
+
       await new Promise<void>((resolve, reject) => {
         const timeout = setTimeout(() => {
           this.setConnectionStatus('DISCONNECTED');
+          MPDiagnostics.logRealtime(channelName, 'TIMED_OUT', 'Connection timeout to Supabase Realtime');
+          MPDiagnostics.logConnectFailure('ONLINE', code, 'Connection timeout to Supabase Realtime', 'TIMED_OUT');
           reject(new Error('Connection timeout to Supabase Realtime'));
         }, 12000);
 
         this.channel?.subscribe(status => {
+          MPDiagnostics.logRealtime(channelName, status);
+
           if (status === 'SUBSCRIBED') {
             clearTimeout(timeout);
             this.setConnectionStatus('CONNECTED');
-            if (__DEV__) {
-              console.log(`[TRANSPORT]\nconnected=true\ntransport=ONLINE\nroomId=${code}\nplayerId=${player.id}`);
-            }
+            MPDiagnostics.logConnectSuccess('ONLINE', code, channelName);
             if (this.localPlayer) {
               this.channel?.track(this.localPlayer);
             }
             resolve();
-          } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
             clearTimeout(timeout);
             this.setConnectionStatus('DISCONNECTED');
-            if (__DEV__) {
-              console.log(`[TRANSPORT]\nconnected=false\ntransport=ONLINE\nroomId=${code}\nplayerId=${player.id}`);
-            }
+            MPDiagnostics.logConnectFailure('ONLINE', code, `Subscription ended: ${status}`, status);
             reject(new Error(`Failed to subscribe: ${status}`));
           }
         });
       });
 
       return true;
-    } catch (err) {
-      console.error('[SupabaseTransport] Connection error:', err);
+    } catch (err: any) {
+      MPDiagnostics.logConnectFailure('ONLINE', code, err?.message || 'UNKNOWN_ERROR', 'CONN_ERR');
       this.setConnectionStatus('DISCONNECTED');
       return false;
     }
   }
 
   async disconnect(): Promise<void> {
+    if (this.roomCode && this.localPlayer) {
+      MPDiagnostics.logDisconnect('ONLINE', this.roomCode, this.localPlayer.id, 'USER_DISCONNECT');
+    }
     if (this.channel) {
       const supabase = getSupabaseClient();
-      await this.channel.untrack();
-      await supabase.removeChannel(this.channel);
+      try {
+        await this.channel.untrack();
+        await supabase.removeChannel(this.channel);
+      } catch (_) {}
       this.channel = null;
     }
     this.setConnectionStatus('DISCONNECTED');
@@ -141,6 +151,13 @@ export class SupabaseTransport implements MultiplayerTransport {
 
   async sendCommand(command: GameCommand): Promise<void> {
     if (!this.channel || this.connectionStatus !== 'CONNECTED') return;
+
+    MPDiagnostics.logCommandSend(
+      this.roomCode,
+      command.playerId,
+      command.commandId,
+      command.type
+    );
 
     await this.channel.send({
       type: 'broadcast',
@@ -152,6 +169,11 @@ export class SupabaseTransport implements MultiplayerTransport {
   async broadcastEvent(event: GameEvent): Promise<void> {
     if (!this.channel || this.connectionStatus !== 'CONNECTED') return;
 
+    const evt = event as any;
+    if (evt.revision !== undefined || evt.type === 'TEST_STATE' || evt.type === 'SYNC_STATE') {
+      MPDiagnostics.logStateSend(this.roomCode, evt.revision || 1);
+    }
+
     await this.channel.send({
       type: 'broadcast',
       event: 'game_event',
@@ -159,7 +181,7 @@ export class SupabaseTransport implements MultiplayerTransport {
     });
   }
 
-  onEvent(callback: (event: GameEvent) => void): () => void {
+  onEvent(callback: (event: GameEvent | any) => void): () => void {
     this.eventListeners.add(callback);
     return () => {
       this.eventListeners.delete(callback);
@@ -183,7 +205,13 @@ export class SupabaseTransport implements MultiplayerTransport {
     this.statusListeners.forEach(fn => fn(status));
   }
 
-  private notifyEvent(event: GameEvent) {
-    this.eventListeners.forEach(fn => fn(event));
+  private notifyEvent(event: GameEvent | any) {
+    this.eventListeners.forEach(fn => {
+      try {
+        fn(event);
+      } catch (err) {
+        console.warn('[SupabaseTransport] Event callback error:', err);
+      }
+    });
   }
 }

@@ -29,6 +29,7 @@ export const RulesScreen: React.FC<RulesScreenProps> = ({
       includeCustomWilds: true,
       soundEnabled: true,
       hapticsEnabled: true,
+      gameEndMode: 'FIRST_PLAYER_WINS',
     }
   );
   const [saveDefaultToast, setSaveDefaultToast] = useState<string | null>(null);

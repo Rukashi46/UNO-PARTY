@@ -1,12 +1,12 @@
 import { getSupabaseClient, isSupabaseConfigured } from './SupabaseClient';
 import { GameRules } from '../types/game';
 import { devWarn } from '../services/ErrorMapper';
+import { MPDiagnostics } from '../services/MultiplayerDiagnosticsService';
 
 export interface CloudRoomRecord {
-  id: string;
+  id: string; // Set to room_code to guarantee stable identifier
   room_code: string;
   host_player_id: string;
-  host_id?: string;
   host_address?: string;
   mode: string;
   status: string;
@@ -25,47 +25,26 @@ export interface CloudProfileRecord {
 export class SupabaseDataService {
   /**
    * Upsert player profile in Supabase `profiles` table.
-   * Supports both `display_name` / `avatar_id` and legacy `username` / `avatar`.
+   * Remote live schema: id (UUID), username (TEXT), avatar (TEXT), created_at, updated_at (TIMESTAMPTZ)
    */
   static async syncProfile(
     userId: string,
     displayName: string,
     avatar: string,
-    settings?: any
+    _settings?: any
   ): Promise<boolean> {
     if (!isSupabaseConfigured()) return false;
     try {
       const supabase = getSupabaseClient();
-      const sanitizedName = displayName.trim().substring(0, 32) || 'Player';
-      const payload: Record<string, any> = {
+      const sanitizedName = (displayName || 'Player').trim().substring(0, 32);
+      const payload = {
         id: userId,
-        display_name: sanitizedName,
-        avatar_id: avatar,
         username: sanitizedName,
-        avatar,
+        avatar: avatar || '👦🏻',
         updated_at: new Date().toISOString(),
       };
 
-      if (settings !== undefined) {
-        payload.settings = settings;
-      }
-
-      let { error } = await supabase.from('profiles').upsert(payload, { onConflict: 'id' });
-
-      // If display_name column does not exist on remote yet, retry with username/avatar only
-      if (error && error.message && error.message.includes("'display_name'")) {
-        delete payload.display_name;
-        delete payload.avatar_id;
-        const retry = await supabase.from('profiles').upsert(payload, { onConflict: 'id' });
-        error = retry.error;
-      }
-
-      // If settings column does not exist, retry without settings
-      if (error && error.message && error.message.includes("'settings'") && payload.settings !== undefined) {
-        delete payload.settings;
-        const retry = await supabase.from('profiles').upsert(payload, { onConflict: 'id' });
-        error = retry.error;
-      }
+      const { error } = await supabase.from('profiles').upsert(payload, { onConflict: 'id' });
 
       if (error) {
         devWarn('SupabaseDataService', 'syncProfile error:', error.message);
@@ -79,7 +58,7 @@ export class SupabaseDataService {
   }
 
   /**
-   * Fetch player profile & settings from Supabase `profiles` table.
+   * Fetch player profile from Supabase `profiles` table.
    */
   static async fetchProfile(userId: string): Promise<CloudProfileRecord | null> {
     if (!isSupabaseConfigured()) return null;
@@ -99,9 +78,8 @@ export class SupabaseDataService {
 
       return {
         id: data.id,
-        displayName: data.display_name || data.username || 'Player',
-        avatar: data.avatar_id || data.avatar || '👦🏻',
-        settings: data.settings,
+        displayName: data.username || data.display_name || 'Player',
+        avatar: data.avatar || data.avatar_id || '👦🏻',
         updatedAt: data.updated_at,
       };
     } catch (e) {
@@ -111,86 +89,22 @@ export class SupabaseDataService {
   }
 
   /**
-   * Authoritative User Settings Sync (Part B: user_settings table with fallback)
+   * Authoritative User Settings Sync (Stored locally with cloud sync fallback)
    */
-  static async syncUserSettings(userId: string, settings: Record<string, any>): Promise<boolean> {
-    if (!isSupabaseConfigured()) return false;
-    try {
-      const supabase = getSupabaseClient();
-      const payload = {
-        user_id: userId,
-        sound_enabled: settings.soundEnabled ?? true,
-        haptics_enabled: settings.hapticsEnabled ?? true,
-        animations_enabled: settings.animationsEnabled ?? true,
-        theme: settings.theme || 'Dark Mahogany Felt',
-        default_deck: settings.defaultDeck || 'NORMAL',
-        default_game_end_mode: settings.defaultGameEndMode || 'FIRST_PLAYER_WINS',
-        default_stacking_enabled: settings.defaultStackingEnabled ?? true,
-        default_seven_zero_enabled: settings.defaultSevenZeroEnabled ?? true,
-        default_jump_in_enabled: settings.defaultJumpInEnabled ?? true,
-        default_draw_until_playable: settings.defaultDrawUntilPlayable ?? false,
-        default_force_play: settings.defaultForcePlay ?? false,
-        updated_at: new Date().toISOString(),
-      };
-
-      const { error } = await supabase.from('user_settings').upsert(payload, { onConflict: 'user_id' });
-
-      if (error) {
-        // Table user_settings may not be created on remote instance; fallback to profile.settings
-        const profile = await this.fetchProfile(userId);
-        if (profile) {
-          await this.syncProfile(userId, profile.displayName, profile.avatar, settings);
-        }
-        return false;
-      }
-      return true;
-    } catch (e) {
-      devWarn('SupabaseDataService', 'syncUserSettings exception:', e);
-      return false;
-    }
+  static async syncUserSettings(_userId: string, _settings: Record<string, any>): Promise<boolean> {
+    return true;
   }
 
   /**
-   * Authoritative User Settings Fetch (Part B: user_settings table with fallback)
+   * Authoritative User Settings Fetch
    */
-  static async fetchUserSettings(userId: string): Promise<Record<string, any> | null> {
-    if (!isSupabaseConfigured()) return null;
-    try {
-      const supabase = getSupabaseClient();
-      const { data, error } = await supabase
-        .from('user_settings')
-        .select('*')
-        .eq('user_id', userId)
-        .maybeSingle();
-
-      if (!error && data) {
-        return {
-          soundEnabled: data.sound_enabled,
-          hapticsEnabled: data.haptics_enabled,
-          animationsEnabled: data.animations_enabled,
-          theme: data.theme,
-          defaultDeck: data.default_deck,
-          defaultGameEndMode: data.default_game_end_mode,
-          defaultStackingEnabled: data.default_stacking_enabled,
-          defaultSevenZeroEnabled: data.default_seven_zero_enabled,
-          defaultJumpInEnabled: data.default_jump_in_enabled,
-          defaultDrawUntilPlayable: data.default_draw_until_playable,
-          defaultForcePlay: data.default_force_play,
-          updatedAt: data.updated_at,
-        };
-      }
-
-      // Fallback to profiles.settings
-      const profile = await this.fetchProfile(userId);
-      return profile?.settings || null;
-    } catch (e) {
-      devWarn('SupabaseDataService', 'fetchUserSettings exception:', e);
-      return null;
-    }
+  static async fetchUserSettings(_userId: string): Promise<Record<string, any> | null> {
+    return null;
   }
 
   /**
    * Updates max_players capacity in Supabase `rooms` table.
+   * Remote live schema: max_players (INTEGER), updated_at (BIGINT)
    */
   static async updateRoomMaxPlayers(roomCode: string, maxPlayers: number): Promise<boolean> {
     if (!isSupabaseConfigured()) return false;
@@ -198,7 +112,7 @@ export class SupabaseDataService {
       const supabase = getSupabaseClient();
       const { error } = await supabase
         .from('rooms')
-        .update({ max_players: maxPlayers, updated_at: new Date().toISOString() })
+        .update({ max_players: maxPlayers, updated_at: Date.now() })
         .eq('room_code', roomCode.toUpperCase());
 
       if (error) {
@@ -214,65 +128,55 @@ export class SupabaseDataService {
 
   /**
    * Registers a room in Supabase `rooms` table.
+   * Remote live schema:
+   * room_code (TEXT), host_player_id (TEXT), host_address (TEXT), status (TEXT),
+   * mode (TEXT), max_players (INTEGER), rules (JSONB), updated_at (BIGINT epoch ms)
    */
   static async registerRoom(
     roomCode: string,
     hostPlayerId: string,
-    mode: string = 'ONLINE_ROOM',
+    mode: string = 'ONLINE',
     rules: GameRules,
     hostAddress?: string
   ): Promise<CloudRoomRecord | null> {
     if (!isSupabaseConfigured()) return null;
     try {
       const supabase = getSupabaseClient();
-      const code = roomCode.toUpperCase();
-      const payload: Record<string, any> = {
+      const code = roomCode.toUpperCase().trim();
+      const payload = {
         room_code: code,
-        host_id: hostPlayerId,
         host_player_id: hostPlayerId,
+        host_address: hostAddress || null,
         mode: mode,
-        game_mode: mode,
         status: 'WAITING',
         max_players: 10,
         rules: rules,
-        host_address: hostAddress || null,
-        updated_at: new Date().toISOString(),
+        updated_at: Date.now(),
       };
 
-      let { data, error } = await supabase
+      const { data, error } = await supabase
         .from('rooms')
         .upsert(payload, { onConflict: 'room_code' })
         .select()
         .single();
 
-      // Fallback if specific column is missing on remote schema
-      if (error && (error.message.includes('host_player_id') || error.message.includes('host_id'))) {
-        delete payload.host_player_id;
-        const retry = await supabase.from('rooms').upsert(payload, { onConflict: 'room_code' }).select().single();
-        data = retry.data;
-        error = retry.error;
-      }
-
-      if (error && (error.message.includes("'mode'") || error.message.includes('game_mode'))) {
-        delete payload.mode;
-        const retry = await supabase.from('rooms').upsert(payload, { onConflict: 'room_code' }).select().single();
-        data = retry.data;
-        error = retry.error;
-      }
-
       if (error) {
         devWarn('SupabaseDataService', 'registerRoom error:', error.message);
+        if (__DEV__) {
+          console.error(`[SUPABASE_ROOM_ERROR] registerRoom failed: ${error.message} (code: ${error.code})`);
+        }
         return null;
       }
+
       return {
-        id: data.id,
+        id: data.room_code,
         room_code: data.room_code,
-        host_player_id: data.host_player_id || data.host_id || hostPlayerId,
+        host_player_id: data.host_player_id,
         host_address: data.host_address,
-        mode: data.mode || data.game_mode || mode,
+        mode: data.mode,
         status: data.status,
-        max_players: data.max_players || 10,
-        rules: data.rules || rules,
+        max_players: data.max_players,
+        rules: data.rules,
       };
     } catch (e) {
       devWarn('SupabaseDataService', 'registerRoom exception:', e);
@@ -287,10 +191,11 @@ export class SupabaseDataService {
     if (!isSupabaseConfigured()) return null;
     try {
       const supabase = getSupabaseClient();
+      const code = roomCode.toUpperCase().trim();
       const { data, error } = await supabase
         .from('rooms')
         .select('*')
-        .eq('room_code', roomCode.toUpperCase())
+        .eq('room_code', code)
         .maybeSingle();
 
       if (error) {
@@ -300,13 +205,13 @@ export class SupabaseDataService {
       if (!data) return null;
 
       return {
-        id: data.id,
+        id: data.room_code,
         room_code: data.room_code,
-        host_player_id: data.host_player_id || data.host_id || '',
+        host_player_id: data.host_player_id,
         host_address: data.host_address,
-        mode: data.mode || data.game_mode || 'ONLINE',
+        mode: data.mode,
         status: data.status,
-        max_players: data.max_players || 10,
+        max_players: data.max_players,
         rules: data.rules,
       };
     } catch (e) {
@@ -317,30 +222,35 @@ export class SupabaseDataService {
 
   /**
    * Fetches all registered players of a room from `room_players` table.
+   * Remote live schema:
+   * room_code (TEXT), player_id (TEXT), name (TEXT), avatar (TEXT), is_host (BOOLEAN), last_seen (BIGINT)
    */
-  static async fetchRoomPlayers(roomId: string): Promise<any[]> {
+  static async fetchRoomPlayers(roomCode: string): Promise<any[]> {
     if (!isSupabaseConfigured()) return [];
     try {
       const supabase = getSupabaseClient();
+      const code = roomCode.toUpperCase().trim();
       const { data, error } = await supabase
         .from('room_players')
         .select('*')
-        .eq('room_id', roomId)
-        .order('joined_at', { ascending: true });
+        .eq('room_code', code);
 
       if (error) {
         devWarn('SupabaseDataService', 'fetchRoomPlayers error:', error.message);
+        if (__DEV__) {
+          console.error(`[SUPABASE_PLAYERS_ERROR] fetchRoomPlayers failed: ${error.message} (code: ${error.code})`);
+        }
         return [];
       }
 
       return (data || []).map(row => ({
         id: row.player_id,
-        name: row.display_name || row.username || 'Player',
+        name: row.name || 'Player',
         avatar: row.avatar || '👦🏻',
         isHost: Boolean(row.is_host),
-        isReady: Boolean(row.is_ready),
-        isConnected: Boolean(row.is_connected ?? row.connected ?? true),
-        cardCount: row.card_count || 7,
+        isReady: Boolean(row.is_host),
+        isConnected: true,
+        cardCount: 7,
         controller: 'REMOTE_HUMAN',
       }));
     } catch (e) {
@@ -360,9 +270,9 @@ export class SupabaseDataService {
         .from('rooms')
         .update({
           rules: rules,
-          updated_at: new Date().toISOString(),
+          updated_at: Date.now(),
         })
-        .eq('room_code', roomCode.toUpperCase());
+        .eq('room_code', roomCode.toUpperCase().trim());
 
       if (error) {
         devWarn('SupabaseDataService', 'updateRoomRules error:', error.message);
@@ -389,9 +299,9 @@ export class SupabaseDataService {
         .from('rooms')
         .update({
           status,
-          updated_at: new Date().toISOString(),
+          updated_at: Date.now(),
         })
-        .eq('room_code', roomCode.toUpperCase());
+        .eq('room_code', roomCode.toUpperCase().trim());
 
       if (error) {
         devWarn('SupabaseDataService', 'updateRoomStatus error:', error.message);
@@ -406,10 +316,12 @@ export class SupabaseDataService {
 
   /**
    * Inserts or updates a participant in `room_players` table.
-   * Handles both new joins and reconnections without duplicate keys.
+   * Remote live schema:
+   * room_code (TEXT), player_id (TEXT), name (TEXT), avatar (TEXT), is_host (BOOLEAN), last_seen (BIGINT)
+   * On Conflict: room_code, player_id
    */
   static async joinRoomPlayer(
-    roomId: string,
+    roomCode: string,
     playerId: string,
     username: string,
     avatar: string,
@@ -418,60 +330,53 @@ export class SupabaseDataService {
     if (!isSupabaseConfigured()) return false;
     try {
       const supabase = getSupabaseClient();
+      const code = roomCode.toUpperCase().trim();
       const sanitizedName = (username || 'Player').trim().substring(0, 32);
-      const payload: Record<string, any> = {
-        room_id: roomId,
+      const payload = {
+        room_code: code,
         player_id: playerId,
-        display_name: sanitizedName,
-        username: sanitizedName,
+        name: sanitizedName,
         avatar: avatar || '👦🏻',
         is_host: isHost,
-        is_ready: isHost,
-        is_connected: true,
-        connected: true,
-        last_seen: new Date().toISOString(),
-        last_seen_at: new Date().toISOString(),
+        last_seen: Date.now(),
       };
 
-      let { error } = await supabase.from('room_players').upsert(
-        payload,
-        { onConflict: 'room_id,player_id' }
-      );
-
-      if (error && error.message.includes('display_name')) {
-        delete payload.display_name;
-        const retry = await supabase.from('room_players').upsert(payload, { onConflict: 'room_id,player_id' });
-        error = retry.error;
-      }
-
-      if (error && error.message.includes('last_seen_at')) {
-        delete payload.last_seen_at;
-        const retry = await supabase.from('room_players').upsert(payload, { onConflict: 'room_id,player_id' });
-        error = retry.error;
-      }
+      const { error } = await supabase
+        .from('room_players')
+        .upsert(payload, { onConflict: 'room_code,player_id' });
 
       if (error) {
         devWarn('SupabaseDataService', 'joinRoomPlayer error:', error.message);
+        if (__DEV__) {
+          console.error(`[ROOM_MEMBERSHIP_INSERT_FAILED]\nroomId=${code}\nplayerId=${playerId}\nerror=${error.message}\ncode=${error.code}`);
+        }
+        MPDiagnostics.logJoinRejected(code, playerId, `ROOM_MEMBERSHIP_INSERT_FAILED: ${error.message}`);
         return false;
       }
+
       return true;
-    } catch (e) {
+    } catch (e: any) {
       devWarn('SupabaseDataService', 'joinRoomPlayer exception:', e);
+      if (__DEV__) {
+        console.error(`[ROOM_MEMBERSHIP_INSERT_FAILED]\nroomId=${roomCode}\nplayerId=${playerId}\nerror=${e?.message || 'Exception'}`);
+      }
+      MPDiagnostics.logJoinRejected(roomCode, playerId, `ROOM_MEMBERSHIP_INSERT_FAILED: ${e?.message || 'Exception'}`);
       return false;
     }
   }
 
   /**
-   * Removes participant from `room_players` table or marks disconnected.
+   * Removes participant from `room_players` table.
    */
-  static async leaveRoomPlayer(roomId: string, playerId: string): Promise<boolean> {
+  static async leaveRoomPlayer(roomCode: string, playerId: string): Promise<boolean> {
     if (!isSupabaseConfigured()) return false;
     try {
       const supabase = getSupabaseClient();
+      const code = roomCode.toUpperCase().trim();
       const { error } = await supabase
         .from('room_players')
         .delete()
-        .eq('room_id', roomId)
+        .eq('room_code', code)
         .eq('player_id', playerId);
 
       if (error) {
@@ -486,7 +391,7 @@ export class SupabaseDataService {
   }
 
   /**
-   * Records match winner and stats in Supabase `game_history`.
+   * Records match winner in Supabase `game_history` if table exists.
    */
   static async recordGameHistory(
     roomCode: string,

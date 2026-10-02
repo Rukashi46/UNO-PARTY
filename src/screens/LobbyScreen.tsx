@@ -17,6 +17,7 @@ import { MultiplayerRoom, RoomPlayer, ConnectionStatus, NearbyWlanRoom } from '.
 import { PlayerIdentityService } from '../services/PlayerIdentityService';
 import { AppSettingsService } from '../services/AppSettingsService';
 import { getSafeErrorMessage } from '../services/ErrorMapper';
+import { MultiplayerDiagnosticsPanel } from '../components/gameplay/MultiplayerDiagnosticsPanel';
 
 interface LobbyScreenProps {
   mode: GameMode;
@@ -248,7 +249,9 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
         controller: 'LOCAL_HUMAN',
       };
 
-      const joined = await session.joinRoom(mode, joinCodeInput.trim().toUpperCase(), player);
+      const joined = await session.joinRoom(mode, joinCodeInput.trim().toUpperCase(), player, {
+        deviceId: identity.deviceId,
+      });
       setRoom(joined);
       setIsJoinModalOpen(false);
       setJoinCodeInput('');
@@ -277,7 +280,11 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
         controller: 'LOCAL_HUMAN',
       };
 
-      const joined = await session.joinRoom(mode, nearby.code, player);
+      const joined = await session.joinRoom(mode, nearby.code, player, {
+        hostAddress: nearby.hostAddress,
+        port: nearby.port,
+        deviceId: identity.deviceId,
+      });
       setRoom(joined);
       showToast(`Joined ${nearby.hostName}'s Room!`);
     } catch (err: any) {
@@ -317,6 +324,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
 
   return (
     <View style={styles.container}>
+      {__DEV__ && <MultiplayerDiagnosticsPanel />}
       {/* Top Header */}
       <View style={styles.header}>
         <Pressable

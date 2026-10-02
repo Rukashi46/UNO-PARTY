@@ -17,6 +17,7 @@ import {
   NearbyWlanRoom,
 } from './types';
 import { ProductionError, devError, devLog, devWarn } from '../services/ErrorMapper';
+import { MPDiagnostics } from '../services/MultiplayerDiagnosticsService';
 
 export class MultiplayerSession {
   private static instance: MultiplayerSession | null = null;
@@ -133,18 +134,15 @@ export class MultiplayerSession {
       await SupabaseDataService.syncProfile(player.id, player.name, player.avatar);
       const cloudRoom = await SupabaseDataService.registerRoom(code, player.id, 'ONLINE', rules);
       if (cloudRoom) {
-        room.id = cloudRoom.id;
-        roomId = cloudRoom.id;
-        await SupabaseDataService.joinRoomPlayer(cloudRoom.id, player.id, player.name, player.avatar, true);
+        room.id = cloudRoom.room_code;
+        roomId = cloudRoom.room_code;
+        await SupabaseDataService.joinRoomPlayer(code, player.id, player.name, player.avatar, true);
       }
     }
 
     await this.transport?.connect(code, this.localPlayer);
 
-    if (__DEV__) {
-      console.log(`[ROOM_CREATE]\ntransport=${mode}\nroomId=${code}\nhostPlayerId=${player.id}`);
-    }
-
+    MPDiagnostics.logCreate(mode, code, player.id, player.deviceId || '');
     this.notifyState();
     return room;
   }
@@ -152,7 +150,8 @@ export class MultiplayerSession {
   async joinRoom(
     mode: MultiplayerMode,
     code: string,
-    player: RoomPlayer
+    player: RoomPlayer,
+    options?: { hostAddress?: string; port?: number; deviceId?: string }
   ): Promise<MultiplayerRoom> {
     const formattedCode = code.toUpperCase().trim();
 
@@ -160,7 +159,7 @@ export class MultiplayerSession {
       throw new ProductionError('ROOM_NOT_FOUND', 'Please enter a valid room code.');
     }
 
-    // Clean up previous room if joining a different room (Requirement 17)
+    // Clean up previous room if joining a different room
     if (this.room && this.room.code !== formattedCode) {
       await this.leaveRoom();
     }
@@ -175,57 +174,63 @@ export class MultiplayerSession {
     };
 
     if (mode === 'ONLINE') {
-      if (__DEV__) {
-        console.log(`[ROOM_JOIN_REQUEST]\ntransport=ONLINE\nroomId=${formattedCode}\nplayerId=${player.id}`);
-      }
+      MPDiagnostics.logJoinSend(formattedCode, player.id, options?.deviceId || player.deviceId || '');
 
+      // Phase 8: Transactional Room Join Steps
+      // Step 1: Resolve room in Supabase
       await SupabaseDataService.syncProfile(player.id, player.name, player.avatar);
       const cloudRoom = await SupabaseDataService.lookupRoom(formattedCode);
       if (!cloudRoom) {
-        if (__DEV__) {
-          console.log(`[ROOM_JOIN_REJECTED]\ntransport=ONLINE\nroomId=${formattedCode}\nplayerId=${player.id}\nreason=ROOM_NOT_FOUND`);
-        }
-        throw new ProductionError('ROOM_NOT_FOUND', `Room ${formattedCode} not found.`);
+        MPDiagnostics.logJoinRejected(formattedCode, player.id, 'ROOM_NOT_FOUND');
+        throw new ProductionError('ROOM_NOT_FOUND', `Room ${formattedCode} not found in Supabase.`);
       }
 
+      // Step 2 & 3: Verify room status and capacity
       if (cloudRoom.status === 'CLOSED' || cloudRoom.status === 'FINISHED') {
-        if (__DEV__) {
-          console.log(`[ROOM_JOIN_REJECTED]\ntransport=ONLINE\nroomId=${formattedCode}\nplayerId=${player.id}\nreason=MATCH_FINISHED`);
-        }
+        MPDiagnostics.logJoinRejected(formattedCode, player.id, 'MATCH_FINISHED');
         throw new ProductionError('MATCH_STARTED', 'This match has already ended.');
       }
 
-      // Check authoritative room membership (Requirement 6, 13, 18)
-      const existingMembers = await SupabaseDataService.fetchRoomPlayers(cloudRoom.id);
+      const existingMembers = await SupabaseDataService.fetchRoomPlayers(formattedCode);
       const isAlreadyMember = existingMembers.some(p => p.id === player.id);
 
       if (!isAlreadyMember) {
         if (existingMembers.length >= (cloudRoom.max_players || 10)) {
-          if (__DEV__) {
-            console.log(`[ROOM_JOIN_REJECTED]\ntransport=ONLINE\nroomId=${formattedCode}\nplayerId=${player.id}\nreason=ROOM_FULL`);
-          }
+          MPDiagnostics.logJoinRejected(formattedCode, player.id, 'ROOM_FULL');
           throw new ProductionError('ROOM_FULL', `Room ${formattedCode} is full.`);
         }
         if (cloudRoom.status === 'PLAYING') {
-          if (__DEV__) {
-            console.log(`[ROOM_JOIN_REJECTED]\ntransport=ONLINE\nroomId=${formattedCode}\nplayerId=${player.id}\nreason=MATCH_STARTED`);
-          }
+          MPDiagnostics.logJoinRejected(formattedCode, player.id, 'MATCH_STARTED');
           throw new ProductionError('MATCH_STARTED', 'Match has already started.');
         }
-        await SupabaseDataService.joinRoomPlayer(cloudRoom.id, player.id, player.name, player.avatar, false);
-      } else {
-        // Reconnect existing player
-        const isHost = existingMembers.find(p => p.id === player.id)?.isHost || false;
-        await SupabaseDataService.joinRoomPlayer(cloudRoom.id, player.id, player.name, player.avatar, isHost);
       }
 
+      // Step 4 & 5: Determine identity & insert membership
+      const isHost = existingMembers.find(p => p.id === player.id)?.isHost || false;
+      const membershipInserted = await SupabaseDataService.joinRoomPlayer(
+        formattedCode,
+        player.id,
+        player.name,
+        player.avatar,
+        isHost
+      );
+
+      if (!membershipInserted) {
+        MPDiagnostics.logJoinRejected(formattedCode, player.id, 'ROOM_MEMBERSHIP_INSERT_FAILED');
+        throw new ProductionError('CONNECTION_FAILED', 'Failed to register room membership in Supabase.');
+      }
+
+      // Step 6 & 7: Subscribe to realtime channel and wait for SUBSCRIBED
       await this.initTransport(mode);
       const connected = await this.transport?.connect(formattedCode, this.localPlayer);
       if (!connected) {
-        throw new Error('Unable to connect to online room channel');
+        await SupabaseDataService.leaveRoomPlayer(formattedCode, player.id).catch(() => {});
+        MPDiagnostics.logJoinRejected(formattedCode, player.id, 'REALTIME_CONNECTION_FAILED');
+        throw new ProductionError('CONNECTION_FAILED', 'Failed to connect to online room realtime channel.');
       }
 
-      const updatedMembers = await SupabaseDataService.fetchRoomPlayers(cloudRoom.id);
+      // Step 8: Fetch authoritative room_players
+      const updatedMembers = await SupabaseDataService.fetchRoomPlayers(formattedCode);
       const mappedPlayers: RoomPlayer[] = updatedMembers.map(m => ({
         ...m,
         controller: m.id === player.id ? 'LOCAL_HUMAN' : 'REMOTE_HUMAN',
@@ -235,10 +240,11 @@ export class MultiplayerSession {
         mappedPlayers.push({ ...this.localPlayer });
       }
 
+      // Step 9 & 10: Receive/build authoritative room state and finalize JOINED
       const room: MultiplayerRoom = {
-        id: cloudRoom.id,
+        id: formattedCode,
         code: formattedCode,
-        hostId: cloudRoom.host_player_id || cloudRoom.host_id || '',
+        hostId: cloudRoom.host_player_id || '',
         status: cloudRoom.status === 'PLAYING' ? 'PLAYING' : 'WAITING',
         mode: 'ONLINE',
         rules: cloudRoom.rules || {
@@ -258,26 +264,30 @@ export class MultiplayerSession {
       };
 
       this.room = room;
-      if (__DEV__) {
-        console.log(`[ROOM_JOIN_ACCEPTED]\ntransport=ONLINE\nroomId=${formattedCode}\nplayerId=${player.id}\nmembers=${mappedPlayers.length}`);
-      }
+
+      // Broadcast join event to host and other peers
+      await this.transport?.broadcastEvent({
+        type: 'PLAYER_JOINED',
+        player: { ...this.localPlayer, controller: 'REMOTE_HUMAN' },
+      });
+
+      MPDiagnostics.logJoinAccepted(formattedCode, player.id, mappedPlayers);
       this.notifyState();
       return room;
     }
 
     if (mode === 'WLAN') {
-      if (__DEV__) {
-        console.log(`[ROOM_JOIN_REQUEST]\ntransport=WLAN\nroomId=${formattedCode}\nplayerId=${player.id}`);
-      }
+      MPDiagnostics.logJoinSend(formattedCode, player.id, options?.deviceId || player.deviceId || '');
 
       await this.initTransport('WLAN');
-      const connected = await this.transport?.connect(formattedCode, this.localPlayer);
+      const connected = await this.transport?.connect(formattedCode, this.localPlayer, options);
       if (!connected) {
+        MPDiagnostics.logJoinRejected(formattedCode, player.id, 'HOST_NOT_RESOLVED_OR_UNREACHABLE');
         throw new ProductionError('ROOM_NOT_FOUND', `WLAN Room ${formattedCode} not found or unreachable on local network.`);
       }
 
       const room: MultiplayerRoom = {
-        id: `wlan_${formattedCode}`,
+        id: formattedCode,
         code: formattedCode,
         hostId: '',
         status: 'WAITING',
@@ -299,6 +309,7 @@ export class MultiplayerSession {
       };
 
       this.room = room;
+      MPDiagnostics.logJoinAccepted(formattedCode, player.id, room.players);
       this.notifyState();
       return room;
     }
@@ -1099,8 +1110,9 @@ export class MultiplayerSession {
     }
 
     // 3. Special actions
+    const activeEligiblePlayers = UnoGameEngine.getEligibleActivePlayers(playerList);
     if (card.value === 'REVERSE') {
-      if (players.length === 2) {
+      if (activeEligiblePlayers.length === 2) {
         // Reverse acts as Skip with 2 players
         this.advanceAuthoritativeTurn(1);
       } else {
@@ -1121,8 +1133,13 @@ export class MultiplayerSession {
         playerId,
         revision: this.authoritativeRevision,
       });
-      // Player takes another turn immediately
-      await this.broadcastTurnChange();
+      // Player takes another turn immediately unless they finished their hand!
+      const playerObj = players.find(p => p.id === playerId);
+      if (playerObj && playerObj.status === 'FINISHED') {
+        this.advanceAuthoritativeTurn();
+      } else {
+        await this.broadcastTurnChange();
+      }
       return;
     }
 
@@ -1448,15 +1465,124 @@ export class MultiplayerSession {
     });
   }
 
-  // Incoming Events Handler (All Clients)
-  private handleIncomingEvent(event: GameEvent) {
-    if (!this.room) return;
+  // Incoming Events & Commands Handler (All Clients & Host)
+  private handleIncomingEvent(event: any) {
+    if (!this.room || !event) return;
+
+    // Phase 9: Transport-level PING / PONG
+    if (event.type === 'PING') {
+      if (event.senderPlayerId !== this.localPlayer?.id) {
+        MPDiagnostics.logCommandReceived(this.room.code, event.senderPlayerId, 'ping', 'PING');
+        // Reply with PONG
+        const pongPayload = {
+          type: 'PONG',
+          roomId: this.room.code,
+          senderPlayerId: this.localPlayer?.id || 'RECEIVER',
+          timestamp: event.timestamp,
+        };
+        if (this.isHost()) {
+          this.transport?.broadcastEvent(pongPayload as any);
+        } else {
+          this.transport?.sendCommand({
+            ...pongPayload,
+            commandId: 'pong_' + Date.now(),
+          } as any);
+        }
+      }
+      return;
+    }
+
+    if (event.type === 'PONG') {
+      MPDiagnostics.recordPongReceived();
+      MPDiagnostics.logCommandReceived(this.room.code, event.senderPlayerId, 'pong', 'PONG');
+      return;
+    }
+
+    // Phase 10: State Synchronization Test
+    if (event.type === 'TEST_STATE') {
+      MPDiagnostics.logStateReceived(this.room.code, event.revision);
+      if (this.isHost() && event.revision === 1) {
+        // Host receives revision 1, responds with revision 2
+        this.sendTestState(2, 'HOST_REVISION_2');
+      }
+      return;
+    }
+
+    // Phase 18: Client Game Commands Routed to Host Authoritative Engine
+    const isCommand = (
+      event.type === 'PLAY_CARD' ||
+      event.type === 'DRAW_CARD' ||
+      event.type === 'CHOOSE_WILD_COLOR' ||
+      event.type === 'CHOOSE_CUSTOM_WILD_POWER' ||
+      event.type === 'CHOOSE_SWAP_TARGET' ||
+      event.type === 'CHOOSE_ROULETTE_COLOR' ||
+      event.type === 'ACCEPT_DRAW_STACK' ||
+      event.type === 'CALL_UNO' ||
+      event.type === 'END_TURN'
+    );
+
+    if (isCommand && event.commandId) {
+      if (this.isHost()) {
+        MPDiagnostics.logCommandReceived(this.room.code, event.playerId, event.commandId, event.type);
+        this.handleAuthoritativeCommand(event as GameCommand);
+      }
+      return;
+    }
+
+    // Phase 19: Revision Control Guard for incoming state updates
+    if (event.revision !== undefined && typeof event.revision === 'number') {
+      if (!this.isHost() && event.revision < this.authoritativeRevision) {
+        if (__DEV__) {
+          console.log(`[STALE_STATE_IGNORED] received revision ${event.revision} < current ${this.authoritativeRevision}`);
+        }
+        return;
+      }
+      if (event.revision > this.authoritativeRevision) {
+        this.authoritativeRevision = event.revision;
+      }
+    }
 
     switch (event.type) {
       case 'PLAYER_JOINED': {
         const existing = this.room.players.find(p => p.id === event.player.id);
         if (!existing) {
           this.room.players.push(event.player);
+          this.notifyState();
+          // Phase 17: If host, broadcast full authoritative room state so all peers show the same member list!
+          if (this.isHost()) {
+            this.transport?.broadcastEvent({
+              type: 'ROOM_STATE',
+              roomId: this.room.code,
+              revision: this.authoritativeRevision,
+              players: this.room.players,
+            } as any);
+            MPDiagnostics.logRoomState(this.room.code, this.authoritativeRevision, this.room.players);
+          }
+        }
+        break;
+      }
+
+      case 'ROOM_STATE': {
+        if (event.players && Array.isArray(event.players)) {
+          const players: RoomPlayer[] = event.players.map((p: any) => ({
+            ...p,
+            controller: p.id === this.localPlayer?.id ? 'LOCAL_HUMAN' : 'REMOTE_HUMAN',
+          }));
+          this.room.players = players;
+          MPDiagnostics.logRoomState(this.room.code, event.revision || this.authoritativeRevision, players);
+          this.notifyState();
+        }
+        break;
+      }
+
+      case 'ROOM_JOIN_ACCEPTED': {
+        if (event.members && Array.isArray(event.members)) {
+          const players: RoomPlayer[] = event.members.map((p: any) => ({
+            ...p,
+            controller: p.id === this.localPlayer?.id ? 'LOCAL_HUMAN' : 'REMOTE_HUMAN',
+          }));
+          this.room.players = players;
+          MPDiagnostics.logJoinAccepted(this.room.code, this.localPlayer?.id || '', players);
           this.notifyState();
         }
         break;
@@ -1507,7 +1633,7 @@ export class MultiplayerSession {
 
       case 'HOST_CHANGED': {
         this.room.hostId = event.newHostId;
-        if (this.localPlayer?.id === event.newHostId) {
+        if (this.localPlayer && this.localPlayer.id === event.newHostId) {
           this.localPlayer.isHost = true;
         }
         this.notifyState();
@@ -1536,6 +1662,53 @@ export class MultiplayerSession {
     }
 
     this.notifyListeners(event);
+  }
+
+  // Phase 9: Send transport ping
+  async sendPing(): Promise<void> {
+    if (!this.localPlayer || !this.room) return;
+    MPDiagnostics.startPingMeasurement();
+    const payload = {
+      type: 'PING',
+      roomId: this.room.code,
+      senderPlayerId: this.localPlayer.id,
+      timestamp: Date.now(),
+    };
+    MPDiagnostics.logCommandSend(this.room.code, this.localPlayer.id, 'ping', 'PING');
+
+    if (this.isHost()) {
+      await this.transport?.broadcastEvent(payload as any);
+    } else {
+      await this.transport?.sendCommand({
+        ...payload,
+        commandId: 'ping_' + Date.now(),
+      } as any);
+    }
+  }
+
+  // Phase 10: Send authoritative test state
+  async sendTestState(revision?: number, testValue: string = 'HELLO'): Promise<void> {
+    if (!this.localPlayer || !this.room) return;
+    const rev = revision !== undefined ? revision : this.authoritativeRevision + 1;
+    this.authoritativeRevision = rev;
+
+    const payload = {
+      type: 'TEST_STATE',
+      roomId: this.room.code,
+      revision: rev,
+      currentPlayerId: this.localPlayer.id,
+      testValue,
+    };
+    MPDiagnostics.logStateSend(this.room.code, rev);
+
+    if (this.isHost()) {
+      await this.transport?.broadcastEvent(payload as any);
+    } else {
+      await this.transport?.sendCommand({
+        ...payload,
+        commandId: 'test_state_' + Date.now(),
+      } as any);
+    }
   }
 
   async leaveRoom(): Promise<void> {

@@ -7,7 +7,8 @@ import {
   GameEvent,
   NearbyWlanRoom,
 } from './types';
-import { devLog, devWarn } from '../services/ErrorMapper';
+import { devWarn } from '../services/ErrorMapper';
+import { MPDiagnostics } from '../services/MultiplayerDiagnosticsService';
 
 const BEACON_TTL_MS = 8000;
 const DEFAULT_WLAN_PORT = 8088;
@@ -18,7 +19,7 @@ const GLOBAL_LAN_REGISTRY = new Map<string, { room: NearbyWlanRoom; timestamp: n
 export class WlanTransport implements MultiplayerTransport {
   private socket: WebSocket | null = null;
   private connectionStatus: ConnectionStatus = 'DISCONNECTED';
-  private eventListeners: Set<(event: GameEvent) => void> = new Set();
+  private eventListeners: Set<(event: GameEvent | any) => void> = new Set();
   private statusListeners: Set<(status: ConnectionStatus) => void> = new Set();
   private roomCode: string = '';
   private localPlayer: RoomPlayer | null = null;
@@ -26,7 +27,7 @@ export class WlanTransport implements MultiplayerTransport {
   private connectedPeers: Map<string, RoomPlayer> = new Map();
   private advertisedRoom: NearbyWlanRoom | null = null;
   private beaconInterval: any = null;
-  private nativeSubscription: any = null;
+  private nativeSubscriptions: any[] = [];
   private discoveredRemoteRooms: Map<string, NearbyWlanRoom> = new Map();
 
   constructor() {
@@ -38,7 +39,9 @@ export class WlanTransport implements MultiplayerTransport {
       const nativeMod = NativeModules.WlanNativeModule;
       if (nativeMod && Platform.OS === 'android') {
         const emitter = new NativeEventEmitter(nativeMod);
-        this.nativeSubscription = emitter.addListener('onWlanRoomDiscovered', (data: string) => {
+
+        // Discovery listener
+        const subDiscovery = emitter.addListener('onWlanRoomDiscovered', (data: string) => {
           try {
             const parsed = typeof data === 'string' ? JSON.parse(data) : data;
             if (parsed && parsed.code) {
@@ -55,39 +58,193 @@ export class WlanTransport implements MultiplayerTransport {
                 lastSeen: Date.now(),
               };
               this.discoveredRemoteRooms.set(nearby.code, nearby);
-              if (__DEV__) {
-                console.log(`[ROOM_DISCOVERY]\nroomId=${nearby.code}\nhost=${nearby.hostName}\nplayerCount=${nearby.playerCount}`);
-              }
+              MPDiagnostics.logDiscovery(nearby.code, nearby.hostPlayerId || 'HOST', nearby.hostAddress || 'N/A', nearby.port || DEFAULT_WLAN_PORT);
             }
           } catch (_) {}
         });
+        this.nativeSubscriptions.push(subDiscovery);
+
+        // Host WebSocket Server Incoming Messages
+        const subServerMsg = emitter.addListener('onWlanServerMessage', (data: string) => {
+          try {
+            const parsed = typeof data === 'string' ? JSON.parse(data) : data;
+            const clientId = parsed.clientId;
+            const msg = typeof parsed.message === 'string' ? JSON.parse(parsed.message) : parsed.message;
+
+            this.handleHostIncomingMessage(clientId, msg);
+          } catch (e) {
+            devWarn('WlanTransport', 'Host server message parse error:', e);
+          }
+        });
+        this.nativeSubscriptions.push(subServerMsg);
+
+        // Host WebSocket Client Connection lifecycle
+        const subClientConn = emitter.addListener('onWlanServerClientConnected', (data: string) => {
+          try {
+            const parsed = typeof data === 'string' ? JSON.parse(data) : data;
+            if (__DEV__) {
+              console.log(`[WLAN_SERVER_CLIENT_CONNECTED] id=${parsed.clientId} addr=${parsed.address}`);
+            }
+          } catch (_) {}
+        });
+        this.nativeSubscriptions.push(subClientConn);
+
+        const subClientDisconn = emitter.addListener('onWlanServerClientDisconnected', (data: string) => {
+          try {
+            const parsed = typeof data === 'string' ? JSON.parse(data) : data;
+            if (__DEV__) {
+              console.log(`[WLAN_SERVER_CLIENT_DISCONNECTED] id=${parsed.clientId}`);
+            }
+          } catch (_) {}
+        });
+        this.nativeSubscriptions.push(subClientDisconn);
       }
     } catch (_) {}
   }
 
+  private async handleHostIncomingMessage(clientId: string, msg: any) {
+    if (!this.isHost || !msg) return;
+
+    if (msg.type === 'JOIN_ROOM') {
+      MPDiagnostics.logJoinReceived(msg.roomId, msg.playerId, msg.deviceId || '');
+
+      if (msg.roomId !== this.roomCode) {
+        MPDiagnostics.logJoinRejected(msg.roomId, msg.playerId, 'ROOM_CODE_MISMATCH');
+        this.sendToNativeClient(clientId, {
+          type: 'ROOM_JOIN_REJECTED',
+          roomId: msg.roomId,
+          reason: 'ROOM_CODE_MISMATCH',
+        });
+        return;
+      }
+
+      // Add joined peer
+      const joinedPeer: RoomPlayer = {
+        id: msg.playerId,
+        name: msg.displayName || 'Player',
+        avatar: msg.avatar || '👦🏻',
+        isHost: false,
+        isReady: false,
+        isConnected: true,
+        cardCount: 7,
+        deviceId: msg.deviceId,
+        controller: 'REMOTE_HUMAN',
+      };
+      this.connectedPeers.set(msg.playerId, joinedPeer);
+
+      const allMembers = [this.localPlayer!, ...Array.from(this.connectedPeers.values())];
+      MPDiagnostics.logJoinAccepted(this.roomCode, msg.playerId, allMembers);
+
+      // Respond with JOIN_ACCEPTED
+      this.sendToNativeClient(clientId, {
+        type: 'ROOM_JOIN_ACCEPTED',
+        roomId: this.roomCode,
+        playerId: msg.playerId,
+        members: allMembers,
+      });
+
+      // Notify host's MultiplayerSession
+      this.notifyEvent({
+        type: 'PLAYER_JOINED',
+        player: joinedPeer,
+      });
+
+      // Broadcast updated member state
+      this.broadcastToNativeClients({
+        type: 'EVENT',
+        event: {
+          type: 'PLAYER_JOINED',
+          player: joinedPeer,
+        },
+      });
+      return;
+    }
+
+    if (msg.type === 'PING') {
+      MPDiagnostics.logCommandReceived(this.roomCode, msg.senderPlayerId, 'ping', 'PING');
+      // Respond with PONG
+      this.sendToNativeClient(clientId, {
+        type: 'PONG',
+        roomId: this.roomCode,
+        senderPlayerId: this.localPlayer?.id || 'HOST',
+        timestamp: msg.timestamp,
+      });
+      return;
+    }
+
+    if (msg.type === 'PONG') {
+      MPDiagnostics.recordPongReceived();
+      MPDiagnostics.logCommandReceived(this.roomCode, msg.senderPlayerId, 'pong', 'PONG');
+      return;
+    }
+
+    if (msg.type === 'COMMAND') {
+      const cmd = msg.command;
+      if (cmd) {
+        MPDiagnostics.logCommandReceived(this.roomCode, cmd.playerId, cmd.commandId, cmd.type);
+        this.notifyEvent(cmd);
+      }
+      return;
+    }
+
+    if (msg.type === 'TEST_STATE') {
+      MPDiagnostics.logStateReceived(this.roomCode, msg.revision);
+      this.notifyEvent(msg);
+      return;
+    }
+  }
+
+  private sendToNativeClient(clientId: string, data: any) {
+    try {
+      const nativeMod = NativeModules.WlanNativeModule;
+      if (nativeMod && nativeMod.sendToClient) {
+        nativeMod.sendToClient(clientId, JSON.stringify(data));
+      }
+    } catch (e) {
+      devWarn('WlanTransport', 'sendToNativeClient error:', e);
+    }
+  }
+
+  private broadcastToNativeClients(data: any) {
+    try {
+      const nativeMod = NativeModules.WlanNativeModule;
+      if (nativeMod && nativeMod.broadcastMessage) {
+        nativeMod.broadcastMessage(JSON.stringify(data));
+      }
+    } catch (e) {
+      devWarn('WlanTransport', 'broadcastToNativeClients error:', e);
+    }
+  }
+
   async startAdvertising(roomInfo: NearbyWlanRoom): Promise<void> {
+    const code = roomInfo.code.toUpperCase().trim();
     this.advertisedRoom = {
       ...roomInfo,
-      code: roomInfo.code.toUpperCase(),
+      code,
       lastSeen: Date.now(),
       port: roomInfo.port || DEFAULT_WLAN_PORT,
     };
 
-    if (__DEV__) {
-      console.log(`[ROOM_CREATE]\ntransport=WLAN\nroomId=${roomInfo.code}\nhostPlayerId=${roomInfo.hostPlayerId || 'HOST'}`);
-    }
+    MPDiagnostics.logCreate('WLAN', code, roomInfo.hostPlayerId || 'HOST', '');
 
     // 1. Register in local process registry
-    GLOBAL_LAN_REGISTRY.set(roomInfo.code.toUpperCase(), {
+    GLOBAL_LAN_REGISTRY.set(code, {
       room: this.advertisedRoom,
       timestamp: Date.now(),
     });
 
-    // 2. Start Native Android UDP broadcast if available
+    // 2. Start Native Android UDP broadcast and RFC 6455 WebSocket Server
     try {
       const nativeMod = NativeModules.WlanNativeModule;
-      if (nativeMod && nativeMod.startAdvertising) {
-        await nativeMod.startAdvertising(JSON.stringify(this.advertisedRoom));
+      if (nativeMod) {
+        // Start TCP/WebSocket Game Server
+        if (nativeMod.startServer) {
+          await nativeMod.startServer(DEFAULT_WLAN_PORT);
+        }
+        // Start UDP beacon broadcasting
+        if (nativeMod.startAdvertising) {
+          await nativeMod.startAdvertising(JSON.stringify(this.advertisedRoom));
+        }
       }
     } catch (e) {
       devWarn('WlanTransport', 'Native advertising start notice:', e);
@@ -116,8 +273,9 @@ export class WlanTransport implements MultiplayerTransport {
     }
     try {
       const nativeMod = NativeModules.WlanNativeModule;
-      if (nativeMod && nativeMod.stopAdvertising) {
-        await nativeMod.stopAdvertising();
+      if (nativeMod) {
+        if (nativeMod.stopAdvertising) await nativeMod.stopAdvertising();
+        if (nativeMod.stopServer) await nativeMod.stopServer();
       }
     } catch (_) {}
   }
@@ -126,6 +284,8 @@ export class WlanTransport implements MultiplayerTransport {
     const now = Date.now();
     const result: NearbyWlanRoom[] = [];
     const seenCodes = new Set<string>();
+
+    MPDiagnostics.logDiscoveryStart('WLAN');
 
     // 1. Check Native Android discovery results
     try {
@@ -185,14 +345,8 @@ export class WlanTransport implements MultiplayerTransport {
       }
     }
 
-    // Exclude this device's own advertised room from nearby remote rooms (Requirement 8)
+    // Exclude this device's own advertised room from nearby remote rooms
     const remoteRooms = result.filter(r => !this.advertisedRoom || r.code !== this.advertisedRoom.code);
-
-    if (__DEV__ && remoteRooms.length > 0) {
-      remoteRooms.forEach(nr => {
-        console.log(`[ROOM_DISCOVERY]\nroomId=${nr.code}\nhost=${nr.hostName}\nplayerCount=${nr.playerCount}`);
-      });
-    }
 
     return remoteRooms;
   }
@@ -208,24 +362,18 @@ export class WlanTransport implements MultiplayerTransport {
     this.isHost = Boolean(player.isHost);
     this.setConnectionStatus('CONNECTING');
 
-    if (__DEV__) {
-      console.log(`[TRANSPORT]\nconnected=false\ntransport=WLAN\nroomId=${formattedCode}\nplayerId=${player.id}`);
-    }
+    MPDiagnostics.logTransportStart('WLAN', 'CONNECTING');
 
     if (this.isHost) {
-      // Host owns authoritative local game session
+      // Host owns authoritative local game session & WebSocket Server
       this.connectedPeers.set(player.id, player);
       this.setConnectionStatus('CONNECTED');
-      if (__DEV__) {
-        console.log(`[TRANSPORT]\nconnected=true\ntransport=WLAN\nroomId=${formattedCode}\nplayerId=${player.id}`);
-      }
+      MPDiagnostics.logConnectSuccess('WLAN', formattedCode, 'WLAN_HOST_SERVER');
       return true;
     }
 
-    // Client Connecting Flow (Requirements 5, 9, 10, 16)
-    if (__DEV__) {
-      console.log(`[ROOM_JOIN_REQUEST]\ntransport=WLAN\nroomId=${formattedCode}\nplayerId=${player.id}`);
-    }
+    // Client Connecting Flow (Device B)
+    MPDiagnostics.logConnectStart('WLAN', formattedCode, options?.hostAddress, options?.port);
 
     // Resolve target host address
     let targetAddress = options?.hostAddress;
@@ -234,30 +382,27 @@ export class WlanTransport implements MultiplayerTransport {
     if (!targetAddress) {
       const nearbyRooms = await this.scanNearbyRooms();
       const targetRoom = nearbyRooms.find(r => r.code === formattedCode);
-      if (targetRoom) {
-        targetAddress = targetRoom.hostAddress || '127.0.0.1';
+      if (targetRoom && targetRoom.hostAddress) {
+        targetAddress = targetRoom.hostAddress;
         targetPort = targetRoom.port || DEFAULT_WLAN_PORT;
       } else if (formattedCode.includes(':')) {
         const parts = formattedCode.split(':');
         targetAddress = parts[0];
         targetPort = parseInt(parts[1], 10) || DEFAULT_WLAN_PORT;
       } else {
-        // Query local LAN registry
         const localEntry = GLOBAL_LAN_REGISTRY.get(formattedCode);
-        if (localEntry) {
-          targetAddress = localEntry.room.hostAddress || '127.0.0.1';
+        if (localEntry && localEntry.room.hostAddress) {
+          targetAddress = localEntry.room.hostAddress;
           targetPort = localEntry.room.port || DEFAULT_WLAN_PORT;
         }
       }
     }
 
-    // If host cannot be found on network, fail definitively (DO NOT FAKE WLAN - Requirement 27)
-    if (!targetAddress) {
+    // Phase 16: If host cannot be found on network, fail definitively (DO NOT CONNECT TO 127.0.0.1)
+    if (!targetAddress || targetAddress === '127.0.0.1') {
       devWarn('WlanTransport', `Host for WLAN room ${formattedCode} could not be resolved on local network.`);
       this.setConnectionStatus('DISCONNECTED');
-      if (__DEV__) {
-        console.log(`[ROOM_JOIN_REJECTED]\ntransport=WLAN\nroomId=${formattedCode}\nplayerId=${player.id}\nreason=HOST_NOT_FOUND`);
-      }
+      MPDiagnostics.logConnectFailure('WLAN', formattedCode, 'HOST_NOT_RESOLVED_ON_LAN', 'HOST_NOT_FOUND');
       return false;
     }
 
@@ -271,14 +416,10 @@ export class WlanTransport implements MultiplayerTransport {
         resolved = true;
         if (success) {
           this.setConnectionStatus('CONNECTED');
-          if (__DEV__) {
-            console.log(`[TRANSPORT]\nconnected=true\ntransport=WLAN\nroomId=${formattedCode}\nplayerId=${player.id}`);
-          }
+          MPDiagnostics.logConnectSuccess('WLAN', formattedCode, targetUrl);
         } else {
           this.setConnectionStatus('DISCONNECTED');
-          if (__DEV__) {
-            console.log(`[ROOM_JOIN_REJECTED]\ntransport=WLAN\nroomId=${formattedCode}\nplayerId=${player.id}\nreason=CONNECTION_FAILED`);
-          }
+          MPDiagnostics.logConnectFailure('WLAN', formattedCode, 'CONNECTION_FAILED', 'CONN_ERR');
         }
         resolve(success);
       };
@@ -287,17 +428,17 @@ export class WlanTransport implements MultiplayerTransport {
         this.socket = new WebSocket(targetUrl);
 
         const connectionTimeout = setTimeout(() => {
-          // If socket cannot connect, reject rather than silently faking connection
           if (!resolved) {
             devWarn('WlanTransport', `Connection timeout to ${targetUrl}`);
             try { this.socket?.close(); } catch (_) {}
             finish(false);
           }
-        }, 5000);
+        }, 6000);
 
         this.socket.onopen = () => {
           clearTimeout(connectionTimeout);
-          // Send JOIN_ROOM handshake (Requirement 10)
+
+          // Phase 13: Send JOIN_ROOM handshake
           const joinPayload = {
             type: 'JOIN_ROOM',
             roomId: formattedCode,
@@ -306,6 +447,7 @@ export class WlanTransport implements MultiplayerTransport {
             avatar: player.avatar,
             deviceId: options?.deviceId || player.deviceId || '',
           };
+          MPDiagnostics.logJoinSend(formattedCode, player.id, joinPayload.deviceId);
           this.socket?.send(JSON.stringify(joinPayload));
         };
 
@@ -313,17 +455,39 @@ export class WlanTransport implements MultiplayerTransport {
           try {
             const data = JSON.parse(e.data);
             if (data.type === 'ROOM_JOIN_ACCEPTED') {
-              if (__DEV__) {
-                console.log(`[ROOM_JOIN_ACCEPTED]\ntransport=WLAN\nroomId=${formattedCode}\nplayerId=${player.id}\nmembers=${data.members?.length || 1}`);
+              MPDiagnostics.logJoinAccepted(formattedCode, player.id, data.members || []);
+              if (data.members) {
+                this.notifyEvent({
+                  type: 'ROOM_JOIN_ACCEPTED',
+                  members: data.members,
+                  roomId: formattedCode,
+                  playerId: player.id,
+                });
               }
               finish(true);
             } else if (data.type === 'ROOM_JOIN_REJECTED') {
               devWarn('WlanTransport', 'Host rejected room join:', data.reason);
-              if (__DEV__) {
-                console.log(`[ROOM_JOIN_REJECTED]\ntransport=WLAN\nroomId=${formattedCode}\nplayerId=${player.id}\nreason=${data.reason || 'REJECTED'}`);
-              }
+              MPDiagnostics.logJoinRejected(formattedCode, player.id, data.reason || 'REJECTED');
               finish(false);
+            } else if (data.type === 'PONG') {
+              MPDiagnostics.recordPongReceived();
+              MPDiagnostics.logCommandReceived(formattedCode, data.senderPlayerId, 'pong', 'PONG');
+            } else if (data.type === 'PING') {
+              // Respond to Host Ping
+              MPDiagnostics.logCommandReceived(formattedCode, data.senderPlayerId, 'ping', 'PING');
+              this.socket?.send(JSON.stringify({
+                type: 'PONG',
+                roomId: formattedCode,
+                senderPlayerId: player.id,
+                timestamp: data.timestamp,
+              }));
+            } else if (data.type === 'TEST_STATE') {
+              MPDiagnostics.logStateReceived(formattedCode, data.revision);
+              this.notifyEvent(data);
             } else if (data.event) {
+              if (data.event.revision !== undefined) {
+                MPDiagnostics.logStateReceived(formattedCode, data.event.revision);
+              }
               this.notifyEvent(data.event as GameEvent);
             }
           } catch (err) {
@@ -339,9 +503,7 @@ export class WlanTransport implements MultiplayerTransport {
 
         this.socket.onclose = () => {
           this.setConnectionStatus('DISCONNECTED');
-          if (__DEV__) {
-            console.log(`[TRANSPORT]\nconnected=false\ntransport=WLAN\nroomId=${formattedCode}\nplayerId=${player.id}`);
-          }
+          MPDiagnostics.logDisconnect('WLAN', formattedCode, player.id, 'SOCKET_CLOSED');
         };
       } catch (e) {
         devWarn('WlanTransport', 'Connection initialization exception:', e);
@@ -351,8 +513,8 @@ export class WlanTransport implements MultiplayerTransport {
   }
 
   async disconnect(): Promise<void> {
-    if (__DEV__ && this.roomCode && this.localPlayer) {
-      console.log(`[ROOM_LEAVE]\ntransport=WLAN\nroomId=${this.roomCode}\nplayerId=${this.localPlayer.id}`);
+    if (this.roomCode && this.localPlayer) {
+      MPDiagnostics.logDisconnect('WLAN', this.roomCode, this.localPlayer.id, 'USER_DISCONNECT');
     }
     await this.stopAdvertising();
     if (this.socket) {
@@ -366,21 +528,69 @@ export class WlanTransport implements MultiplayerTransport {
   }
 
   async sendCommand(command: GameCommand): Promise<void> {
+    MPDiagnostics.logCommandSend(this.roomCode, command.playerId, command.commandId, command.type);
+
     if (this.socket && this.socket.readyState === WebSocket.OPEN) {
       this.socket.send(JSON.stringify({ type: 'COMMAND', command }));
+    } else if (this.isHost) {
+      // Local host processing
+      this.notifyEvent(command);
     }
   }
 
   async broadcastEvent(event: GameEvent): Promise<void> {
-    if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-      this.socket.send(JSON.stringify({ type: 'EVENT', event }));
+    if ((event as any).revision !== undefined) {
+      MPDiagnostics.logStateSend(this.roomCode, (event as any).revision);
     }
+
     if (this.isHost) {
+      this.broadcastToNativeClients({ type: 'EVENT', event });
       this.notifyEvent(event);
+    } else if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+      this.socket.send(JSON.stringify({ type: 'EVENT', event }));
     }
   }
 
-  onEvent(callback: (event: GameEvent) => void): () => void {
+  // Phase 9: Transport Ping/Pong
+  async sendPing(): Promise<void> {
+    if (!this.localPlayer) return;
+    MPDiagnostics.startPingMeasurement();
+    const payload = {
+      type: 'PING',
+      roomId: this.roomCode,
+      senderPlayerId: this.localPlayer.id,
+      timestamp: Date.now(),
+    };
+    MPDiagnostics.logCommandSend(this.roomCode, this.localPlayer.id, 'ping', 'PING');
+
+    if (this.isHost) {
+      this.broadcastToNativeClients(payload);
+    } else if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+      this.socket.send(JSON.stringify(payload));
+    }
+  }
+
+  // Phase 10: Test State Sync
+  async sendTestState(revision: number, testValue: string = 'HELLO'): Promise<void> {
+    if (!this.localPlayer) return;
+    const payload = {
+      type: 'TEST_STATE',
+      roomId: this.roomCode,
+      revision,
+      currentPlayerId: this.localPlayer.id,
+      testValue,
+    };
+    MPDiagnostics.logStateSend(this.roomCode, revision);
+
+    if (this.isHost) {
+      this.broadcastToNativeClients(payload);
+      this.notifyEvent(payload);
+    } else if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+      this.socket.send(JSON.stringify(payload));
+    }
+  }
+
+  onEvent(callback: (event: GameEvent | any) => void): () => void {
     this.eventListeners.add(callback);
     return () => {
       this.eventListeners.delete(callback);
@@ -404,7 +614,7 @@ export class WlanTransport implements MultiplayerTransport {
     this.statusListeners.forEach(fn => fn(status));
   }
 
-  private notifyEvent(event: GameEvent) {
+  private notifyEvent(event: GameEvent | any) {
     this.eventListeners.forEach(fn => {
       try {
         fn(event);

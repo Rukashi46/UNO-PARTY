@@ -22,22 +22,37 @@ type AppScreen = 'SPLASH' | 'HOME' | 'SETTINGS' | 'LOBBY' | 'RULES' | 'GAMEPLAY'
 export default function App() {
   const [currentScreen, setCurrentScreen] = useState<AppScreen>('SPLASH');
   const [selectedMode, setSelectedMode] = useState<GameMode>('ONLINE');
-  const [matchRules, setMatchRules] = useState<GameRules>({
-    deckType: 'NORMAL',
-    stacking: true,
-    sevenZeroRule: true,
-    jumpInRule: true,
-    drawUntilPlayable: false,
-    forcePlay: false,
-    mercy25Cards: true,
-    includeCustomWilds: true,
-    soundEnabled: true,
-    hapticsEnabled: true,
+  const [matchRules, setMatchRules] = useState<GameRules>(() => {
+    const defaults = AppSettingsService.getSettings();
+    return {
+      deckType: defaults.defaultDeck || 'NORMAL',
+      stacking: defaults.defaultStackingEnabled ?? true,
+      sevenZeroRule: defaults.defaultSevenZeroEnabled ?? true,
+      jumpInRule: defaults.defaultJumpInEnabled ?? true,
+      drawUntilPlayable: defaults.defaultDrawUntilPlayable ?? false,
+      forcePlay: defaults.defaultForcePlay ?? false,
+      mercy25Cards: defaults.defaultDeck === 'NO_MERCY',
+      includeCustomWilds: true,
+      soundEnabled: defaults.soundEnabled ?? true,
+      hapticsEnabled: defaults.hapticsEnabled ?? true,
+      gameEndMode: defaults.defaultGameEndMode || 'FIRST_PLAYER_WINS',
+    };
   });
 
   // Initialize App Settings & Dismiss Native Splash on Mount
   useEffect(() => {
-    AppSettingsService.init();
+    AppSettingsService.init().then(settings => {
+      setMatchRules(prev => ({
+        ...prev,
+        deckType: settings.defaultDeck || prev.deckType,
+        stacking: settings.defaultStackingEnabled ?? prev.stacking,
+        sevenZeroRule: settings.defaultSevenZeroEnabled ?? prev.sevenZeroRule,
+        jumpInRule: settings.defaultJumpInEnabled ?? prev.jumpInRule,
+        drawUntilPlayable: settings.defaultDrawUntilPlayable ?? prev.drawUntilPlayable,
+        forcePlay: settings.defaultForcePlay ?? prev.forcePlay,
+        gameEndMode: settings.defaultGameEndMode || prev.gameEndMode,
+      }));
+    });
     try {
       ExpoSplashScreen.hideAsync().catch(() => {});
     } catch (_) {}
@@ -117,7 +132,7 @@ export default function App() {
             {currentScreen === 'RULES' && (
               <SafeAreaView style={styles.safeArea}>
                 <RulesScreen
-                  rules={matchRules}
+                  rules={MultiplayerSession.getInstance().getRoom()?.rules || matchRules}
                   isHost={MultiplayerSession.getInstance().isHost()}
                   onUpdateRules={rules => {
                     setMatchRules(rules);

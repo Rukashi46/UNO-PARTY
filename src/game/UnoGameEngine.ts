@@ -135,6 +135,33 @@ export class UnoGameEngine {
       }
     }
 
+    // Safety guarantee: If stepCount was 0 or current player finished, never return an ineligible player!
+    const selected = players[index];
+    const isSelectedEligible =
+      selected &&
+      !selected.isEliminated &&
+      selected.status !== 'FINISHED' &&
+      selected.status !== 'ELIMINATED' &&
+      (selected.status === 'ACTIVE' || selected.cardCount > 0 || (selected.hand && selected.hand.length > 0));
+
+    if (!isSelectedEligible) {
+      let findLoop = 0;
+      while (findLoop < total) {
+        index = (index + dirStep + total) % total;
+        findLoop++;
+        const candidate = players[index];
+        if (
+          candidate &&
+          !candidate.isEliminated &&
+          candidate.status !== 'FINISHED' &&
+          candidate.status !== 'ELIMINATED' &&
+          (candidate.status === 'ACTIVE' || candidate.cardCount > 0 || (candidate.hand && candidate.hand.length > 0))
+        ) {
+          return index;
+        }
+      }
+    }
+
     return index;
   }
 
