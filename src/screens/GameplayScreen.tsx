@@ -748,11 +748,18 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
           break;
         }
 
+        case 'MATCH_FINISHED':
         case 'PLAYER_WON': {
           if (event.finalResults) {
             setFinalResults(event.finalResults);
           }
-          setWinner({ name: event.winnerName, avatar: '👑', isHuman: event.winnerId === localUser?.id });
+          if (event.finishingOrder) {
+            setFinishingOrder(event.finishingOrder);
+            finishingOrderRef.current = event.finishingOrder;
+          }
+          const winnerName = ('winnerName' in event ? (event as any).winnerName : '') || 'Player';
+          const winnerId = ('winnerId' in event ? (event as any).winnerId : '') || '';
+          setWinner({ name: winnerName, avatar: '👑', isHuman: Boolean(winnerId && winnerId === localUser?.id) });
           setActionLock('GAME_OVER');
           break;
         }
@@ -1339,32 +1346,35 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
         session.acceptDrawStack();
 
         // Check Mercy Rule (25+ cards in No Mercy)
-        const evalResult = UnoGameEngine.evaluatePlayerCompletion(
-          allPlayersRef.current,
-          rules,
-          finishingOrderRef.current,
-          eliminatedOrderRef.current
-        );
+        const isMultiplayer = activeRoom?.mode === 'ONLINE' || activeRoom?.mode === 'WLAN';
+        if (!isMultiplayer) {
+          const evalResult = UnoGameEngine.evaluatePlayerCompletion(
+            allPlayersRef.current,
+            rules,
+            finishingOrderRef.current,
+            eliminatedOrderRef.current
+          );
 
-        finishingOrderRef.current = evalResult.finishingOrder;
-        eliminatedOrderRef.current = evalResult.eliminatedOrder;
-        setFinishingOrder(evalResult.finishingOrder);
-        setEliminatedOrder(evalResult.eliminatedOrder);
+          finishingOrderRef.current = evalResult.finishingOrder;
+          eliminatedOrderRef.current = evalResult.eliminatedOrder;
+          setFinishingOrder(evalResult.finishingOrder);
+          setEliminatedOrder(evalResult.eliminatedOrder);
 
-        allPlayersRef.current = evalResult.updatedPlayers;
-        setAllPlayers(evalResult.updatedPlayers);
+          allPlayersRef.current = evalResult.updatedPlayers;
+          setAllPlayers(evalResult.updatedPlayers);
 
-        if (evalResult.justEliminatedPlayerId) {
-          const elim = evalResult.updatedPlayers.find(p => p.id === evalResult.justEliminatedPlayerId);
-          showToast('ELIMINATED!', `${elim?.name || 'Player'} reached 25+ cards and was eliminated!`, 'penalty');
-        }
+          if (evalResult.justEliminatedPlayerId) {
+            const elim = evalResult.updatedPlayers.find(p => p.id === evalResult.justEliminatedPlayerId);
+            showToast('ELIMINATED!', `${elim?.name || 'Player'} reached 25+ cards and was eliminated!`, 'penalty');
+          }
 
-        if (evalResult.isMatchOver) {
-          setFinalResults(evalResult.finalResults);
-          const w = evalResult.winner;
-          setWinner(w ? { name: w.name, avatar: w.avatar, isHuman: w.isHuman } : null);
-          setActionLock('GAME_OVER');
-          return;
+          if (evalResult.isMatchOver) {
+            setFinalResults(evalResult.finalResults);
+            const w = evalResult.winner;
+            setWinner(w ? { name: w.name, avatar: w.avatar, isHuman: w.isHuman } : null);
+            setActionLock('GAME_OVER');
+            return;
+          }
         }
 
         // Penalty drawer automatically loses turn - advances to next active player without requiring End Turn
@@ -1418,32 +1428,35 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
       setDiscardPile(currentDiscard);
 
       // Check Mercy Rule (25+ cards in No Mercy)
-      const evalResult = UnoGameEngine.evaluatePlayerCompletion(
-        allPlayersRef.current,
-        rules,
-        finishingOrderRef.current,
-        eliminatedOrderRef.current
-      );
+      const isMultiplayer = activeRoom?.mode === 'ONLINE' || activeRoom?.mode === 'WLAN';
+      if (!isMultiplayer) {
+        const evalResult = UnoGameEngine.evaluatePlayerCompletion(
+          allPlayersRef.current,
+          rules,
+          finishingOrderRef.current,
+          eliminatedOrderRef.current
+        );
 
-      finishingOrderRef.current = evalResult.finishingOrder;
-      eliminatedOrderRef.current = evalResult.eliminatedOrder;
-      setFinishingOrder(evalResult.finishingOrder);
-      setEliminatedOrder(evalResult.eliminatedOrder);
+        finishingOrderRef.current = evalResult.finishingOrder;
+        eliminatedOrderRef.current = evalResult.eliminatedOrder;
+        setFinishingOrder(evalResult.finishingOrder);
+        setEliminatedOrder(evalResult.eliminatedOrder);
 
-      allPlayersRef.current = evalResult.updatedPlayers;
-      setAllPlayers(evalResult.updatedPlayers);
+        allPlayersRef.current = evalResult.updatedPlayers;
+        setAllPlayers(evalResult.updatedPlayers);
 
-      if (evalResult.justEliminatedPlayerId) {
-        const elim = evalResult.updatedPlayers.find(p => p.id === evalResult.justEliminatedPlayerId);
-        showToast('ELIMINATED!', `${elim?.name || 'Player'} reached 25+ cards and was eliminated!`, 'penalty');
-      }
+        if (evalResult.justEliminatedPlayerId) {
+          const elim = evalResult.updatedPlayers.find(p => p.id === evalResult.justEliminatedPlayerId);
+          showToast('ELIMINATED!', `${elim?.name || 'Player'} reached 25+ cards and was eliminated!`, 'penalty');
+        }
 
-      if (evalResult.isMatchOver) {
-        setFinalResults(evalResult.finalResults);
-        const w = evalResult.winner;
-        setWinner(w ? { name: w.name, avatar: w.avatar, isHuman: w.isHuman } : null);
-        setActionLock('GAME_OVER');
-        return;
+        if (evalResult.isMatchOver) {
+          setFinalResults(evalResult.finalResults);
+          const w = evalResult.winner;
+          setWinner(w ? { name: w.name, avatar: w.avatar, isHuman: w.isHuman } : null);
+          setActionLock('GAME_OVER');
+          return;
+        }
       }
 
       session.drawCard();
@@ -1654,33 +1667,41 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
         allPlayersRef.current = nextPlayers;
         setAllPlayers(nextPlayers);
 
-        // Authoritative completion evaluation
-        const evalResult = UnoGameEngine.evaluatePlayerCompletion(
-          allPlayersRef.current,
-          rules,
-          finishingOrderRef.current,
-          eliminatedOrderRef.current
-        );
+        const isMultiplayer = activeRoom?.mode === 'ONLINE' || activeRoom?.mode === 'WLAN';
 
-        finishingOrderRef.current = evalResult.finishingOrder;
-        eliminatedOrderRef.current = evalResult.eliminatedOrder;
-        setFinishingOrder(evalResult.finishingOrder);
-        setEliminatedOrder(evalResult.eliminatedOrder);
+        // In multiplayer, skip local win evaluation — the authoritative host
+        // broadcasts PLAYER_WON to ALL clients (including itself) via the event
+        // handler. Running it locally here causes the host to see GAME_OVER
+        // immediately while other clients see nothing.
+        if (!isMultiplayer) {
+          // Authoritative completion evaluation (local/offline modes only)
+          const evalResult = UnoGameEngine.evaluatePlayerCompletion(
+            allPlayersRef.current,
+            rules,
+            finishingOrderRef.current,
+            eliminatedOrderRef.current
+          );
 
-        allPlayersRef.current = evalResult.updatedPlayers;
-        setAllPlayers(evalResult.updatedPlayers);
+          finishingOrderRef.current = evalResult.finishingOrder;
+          eliminatedOrderRef.current = evalResult.eliminatedOrder;
+          setFinishingOrder(evalResult.finishingOrder);
+          setEliminatedOrder(evalResult.eliminatedOrder);
 
-        if (evalResult.justFinishedPlayerId) {
-          const finisher = evalResult.updatedPlayers.find(p => p.id === evalResult.justFinishedPlayerId);
-          showToast('FINISHED!', `${finisher?.name || 'Player'} finished in position #${finisher?.finishRank || 1}!`, 'success');
-        }
+          allPlayersRef.current = evalResult.updatedPlayers;
+          setAllPlayers(evalResult.updatedPlayers);
 
-        if (evalResult.isMatchOver) {
-          setFinalResults(evalResult.finalResults);
-          const w = evalResult.winner || curPlayer;
-          setWinner(w ? { name: w.name, avatar: w.avatar, isHuman: w.isHuman } : null);
-          setActionLock('GAME_OVER');
-          return;
+          if (evalResult.justFinishedPlayerId) {
+            const finisher = evalResult.updatedPlayers.find(p => p.id === evalResult.justFinishedPlayerId);
+            showToast('FINISHED!', `${finisher?.name || 'Player'} finished in position #${finisher?.finishRank || 1}!`, 'success');
+          }
+
+          if (evalResult.isMatchOver) {
+            setFinalResults(evalResult.finalResults);
+            const w = evalResult.winner || curPlayer;
+            setWinner(w ? { name: w.name, avatar: w.avatar, isHuman: w.isHuman } : null);
+            setActionLock('GAME_OVER');
+            return;
+          }
         }
 
         const remainingCards = (curPlayer?.hand.length || 1) - 1;
@@ -1712,9 +1733,10 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
 
         NativeEffectsService.triggerCardPlay();
 
-        const isMultiplayer = activeRoom?.mode === 'ONLINE' || activeRoom?.mode === 'WLAN';
         if (isMultiplayer) {
           MPDiagnostics.logGameTx('PLAY_CARD', curPlayer?.id || '', card.id, activeRoom.code);
+          // Stay in WAITING_FOR_REMOTE_PLAYER; the authoritative GAME_STATE_UPDATE
+          // or PLAYER_WON event will unlock the screen for all players.
           setActionLock('WAITING_FOR_REMOTE_PLAYER');
           session.playCard(card.id, finalColor);
         } else {
@@ -1883,27 +1905,30 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
     showToast('0 PASS HANDS', `Hands passed ${playDirectionRef.current === 'CW' ? 'Clockwise' : 'Counter-Clockwise'}!`, 'warning');
     console.log(`[EFFECT] turnId=${turnIdRef.current} card=0 source=${curPlayer.name} effect=PASS_HANDS direction=${playDirectionRef.current}`);
 
-    // 4. Evaluate completion / win
-    const evalResult = UnoGameEngine.evaluatePlayerCompletion(
-      updatedPlayers,
-      rules,
-      finishingOrderRef.current,
-      eliminatedOrderRef.current
-    );
+    // 4. Evaluate completion / win (local/offline only; multiplayer is handled authoritatively by Host)
+    const isMultiplayer = activeRoom?.mode === 'ONLINE' || activeRoom?.mode === 'WLAN';
+    if (!isMultiplayer) {
+      const evalResult = UnoGameEngine.evaluatePlayerCompletion(
+        updatedPlayers,
+        rules,
+        finishingOrderRef.current,
+        eliminatedOrderRef.current
+      );
 
-    finishingOrderRef.current = evalResult.finishingOrder;
-    eliminatedOrderRef.current = evalResult.eliminatedOrder;
-    setFinishingOrder(evalResult.finishingOrder);
-    setEliminatedOrder(evalResult.eliminatedOrder);
-    allPlayersRef.current = evalResult.updatedPlayers;
-    setAllPlayers(evalResult.updatedPlayers);
+      finishingOrderRef.current = evalResult.finishingOrder;
+      eliminatedOrderRef.current = evalResult.eliminatedOrder;
+      setFinishingOrder(evalResult.finishingOrder);
+      setEliminatedOrder(evalResult.eliminatedOrder);
+      allPlayersRef.current = evalResult.updatedPlayers;
+      setAllPlayers(evalResult.updatedPlayers);
 
-    if (evalResult.isMatchOver) {
-      setFinalResults(evalResult.finalResults);
-      const w = evalResult.winner || curPlayer;
-      setWinner(w ? { name: w.name, avatar: w.avatar, isHuman: w.isHuman } : null);
-      setActionLock('GAME_OVER');
-      return;
+      if (evalResult.isMatchOver) {
+        setFinalResults(evalResult.finalResults);
+        const w = evalResult.winner || curPlayer;
+        setWinner(w ? { name: w.name, avatar: w.avatar, isHuman: w.isHuman } : null);
+        setActionLock('GAME_OVER');
+        return;
+      }
     }
 
     advanceToNextActivePlayer({ playedCard: card, newActiveColor: card.color, reason: 'PASS_HANDS' });
@@ -1935,27 +1960,30 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
     showToast('DISCARD ALL', `Discarded ${discardedCount + 1} ${card.color} cards!`, 'warning');
     console.log(`[EFFECT] turnId=${turnIdRef.current} card=DISCARD_ALL source=${curPlayer.name} color=${card.color} count=${discardedCount + 1}`);
 
-    // 2. Evaluate completion / win
-    const evalResult = UnoGameEngine.evaluatePlayerCompletion(
-      nextPlayers,
-      rules,
-      finishingOrderRef.current,
-      eliminatedOrderRef.current
-    );
+    // 2. Evaluate completion / win (local/offline only; multiplayer is handled authoritatively by Host)
+    const isMultiplayer = activeRoom?.mode === 'ONLINE' || activeRoom?.mode === 'WLAN';
+    if (!isMultiplayer) {
+      const evalResult = UnoGameEngine.evaluatePlayerCompletion(
+        nextPlayers,
+        rules,
+        finishingOrderRef.current,
+        eliminatedOrderRef.current
+      );
 
-    finishingOrderRef.current = evalResult.finishingOrder;
-    eliminatedOrderRef.current = evalResult.eliminatedOrder;
-    setFinishingOrder(evalResult.finishingOrder);
-    setEliminatedOrder(evalResult.eliminatedOrder);
-    allPlayersRef.current = evalResult.updatedPlayers;
-    setAllPlayers(evalResult.updatedPlayers);
+      finishingOrderRef.current = evalResult.finishingOrder;
+      eliminatedOrderRef.current = evalResult.eliminatedOrder;
+      setFinishingOrder(evalResult.finishingOrder);
+      setEliminatedOrder(evalResult.eliminatedOrder);
+      allPlayersRef.current = evalResult.updatedPlayers;
+      setAllPlayers(evalResult.updatedPlayers);
 
-    if (evalResult.isMatchOver) {
-      setFinalResults(evalResult.finalResults);
-      const w = evalResult.winner || curPlayer;
-      setWinner(w ? { name: w.name, avatar: w.avatar, isHuman: w.isHuman } : null);
-      setActionLock('GAME_OVER');
-      return;
+      if (evalResult.isMatchOver) {
+        setFinalResults(evalResult.finalResults);
+        const w = evalResult.winner || curPlayer;
+        setWinner(w ? { name: w.name, avatar: w.avatar, isHuman: w.isHuman } : null);
+        setActionLock('GAME_OVER');
+        return;
+      }
     }
 
     advanceToNextActivePlayer({ playedCard: card, newActiveColor: card.color, reason: 'DISCARD_ALL' });
@@ -2066,27 +2094,30 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
       showToast('SWAP HANDS', `Exchanged hands with ${target.name}!`, 'warning');
       console.log(`[EFFECT] turnId=${turnIdRef.current} card=7 source=${curPlayer.name} target=${target.name} effect=SWAP_HANDS`);
 
-      // 3. Evaluate completion / win
-      const evalResult = UnoGameEngine.evaluatePlayerCompletion(
-        updatedPlayers,
-        rules,
-        finishingOrderRef.current,
-        eliminatedOrderRef.current
-      );
+      // 3. Evaluate completion / win (local/offline only; multiplayer is handled authoritatively by Host)
+      const isMultiplayer = activeRoom?.mode === 'ONLINE' || activeRoom?.mode === 'WLAN';
+      if (!isMultiplayer) {
+        const evalResult = UnoGameEngine.evaluatePlayerCompletion(
+          updatedPlayers,
+          rules,
+          finishingOrderRef.current,
+          eliminatedOrderRef.current
+        );
 
-      finishingOrderRef.current = evalResult.finishingOrder;
-      eliminatedOrderRef.current = evalResult.eliminatedOrder;
-      setFinishingOrder(evalResult.finishingOrder);
-      setEliminatedOrder(evalResult.eliminatedOrder);
-      allPlayersRef.current = evalResult.updatedPlayers;
-      setAllPlayers(evalResult.updatedPlayers);
+        finishingOrderRef.current = evalResult.finishingOrder;
+        eliminatedOrderRef.current = evalResult.eliminatedOrder;
+        setFinishingOrder(evalResult.finishingOrder);
+        setEliminatedOrder(evalResult.eliminatedOrder);
+        allPlayersRef.current = evalResult.updatedPlayers;
+        setAllPlayers(evalResult.updatedPlayers);
 
-      if (evalResult.isMatchOver) {
-        setFinalResults(evalResult.finalResults);
-        const w = evalResult.winner || curPlayer;
-        setWinner(w ? { name: w.name, avatar: w.avatar, isHuman: w.isHuman } : null);
-        setActionLock('GAME_OVER');
-        return;
+        if (evalResult.isMatchOver) {
+          setFinalResults(evalResult.finalResults);
+          const w = evalResult.winner || curPlayer;
+          setWinner(w ? { name: w.name, avatar: w.avatar, isHuman: w.isHuman } : null);
+          setActionLock('GAME_OVER');
+          return;
+        }
       }
 
       advanceToNextActivePlayer({ playedCard: card || undefined, newActiveColor: card?.color, reason: 'SWAP_HANDS' });
@@ -2147,27 +2178,30 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
         console.log(`[EFFECT] turnId=${turnIdRef.current} card=COLOR_ROULETTE source=${curPlayer?.name} target=${targetPlayer.name} color=${color} drawn=${drawnCards.length}`);
       }
 
-      // Check completions
-      const evalResult = UnoGameEngine.evaluatePlayerCompletion(
-        allPlayersRef.current,
-        rules,
-        finishingOrderRef.current,
-        eliminatedOrderRef.current
-      );
+      // Check completions (local/offline only; multiplayer is handled authoritatively by Host)
+      const isMultiplayer = activeRoom?.mode === 'ONLINE' || activeRoom?.mode === 'WLAN';
+      if (!isMultiplayer) {
+        const evalResult = UnoGameEngine.evaluatePlayerCompletion(
+          allPlayersRef.current,
+          rules,
+          finishingOrderRef.current,
+          eliminatedOrderRef.current
+        );
 
-      finishingOrderRef.current = evalResult.finishingOrder;
-      eliminatedOrderRef.current = evalResult.eliminatedOrder;
-      setFinishingOrder(evalResult.finishingOrder);
-      setEliminatedOrder(evalResult.eliminatedOrder);
-      allPlayersRef.current = evalResult.updatedPlayers;
-      setAllPlayers(evalResult.updatedPlayers);
+        finishingOrderRef.current = evalResult.finishingOrder;
+        eliminatedOrderRef.current = evalResult.eliminatedOrder;
+        setFinishingOrder(evalResult.finishingOrder);
+        setEliminatedOrder(evalResult.eliminatedOrder);
+        allPlayersRef.current = evalResult.updatedPlayers;
+        setAllPlayers(evalResult.updatedPlayers);
 
-      if (evalResult.isMatchOver) {
-        setFinalResults(evalResult.finalResults);
-        const w = evalResult.winner;
-        setWinner(w ? { name: w.name, avatar: w.avatar, isHuman: w.isHuman } : null);
-        setActionLock('GAME_OVER');
-        return;
+        if (evalResult.isMatchOver) {
+          setFinalResults(evalResult.finalResults);
+          const w = evalResult.winner;
+          setWinner(w ? { name: w.name, avatar: w.avatar, isHuman: w.isHuman } : null);
+          setActionLock('GAME_OVER');
+          return;
+        }
       }
 
       // Target loses turn: advance with stepMultiplier = 2 (skipping target)
@@ -2429,7 +2463,7 @@ export const GameplayScreen: React.FC<GameplayScreenProps> = ({ onQuit }) => {
         visible={swapModalVisible}
         canChoose={canChooseSwap}
         chooserName={swapChooserName}
-        eligiblePlayers={opponents}
+        eligiblePlayers={opponents.filter(p => p.status !== 'FINISHED' && p.status !== 'ELIMINATED' && !p.isEliminated)}
         onSelectPlayer={handleSwapPlayerSelected}
       />
 

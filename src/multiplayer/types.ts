@@ -113,7 +113,7 @@ export type GameEvent =
   | { type: 'PLAYER_ELIMINATED'; playerId: string; reason: string; revision: number }
   | { type: 'PLAYER_FINISHED'; playerId: string; rank: number; finishingOrder: string[]; revision: number }
   | { type: 'PLAYER_WON'; winnerId: string; winnerName: string; finishingOrder?: string[]; finalResults?: any[]; revision: number }
-  | { type: 'MATCH_FINISHED'; finishingOrder?: string[]; finalResults?: any[]; revision?: number }
+  | { type: 'MATCH_FINISHED'; winnerId?: string; winnerName?: string; finishingOrder?: string[]; finalResults?: any[]; revision?: number }
   | {
       type: 'GAME_STATE_UPDATE';
       revision: number;

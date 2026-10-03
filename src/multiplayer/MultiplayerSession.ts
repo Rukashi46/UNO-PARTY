@@ -1,6 +1,6 @@
 import { UnoDeckService } from '../game/UnoDeckService';
 import { UnoGameEngine } from '../game/UnoGameEngine';
-import { UnoCard, UnoColor, GameRules, GamePhase, CustomWildPower, DeckType, Player } from '../types/game';
+import { UnoCard, UnoColor, GameRules, GamePhase, CustomWildPower, DeckType, Player, PlayerStatus } from '../types/game';
 import { SupabaseTransport } from './SupabaseTransport';
 import { WlanTransport } from './WlanTransport';
 import { LocalTransport } from './LocalTransport';
@@ -109,12 +109,31 @@ export class MultiplayerSession {
     return [...this.localPrivateHand];
   }
 
+  // Dedicated persistent transport for background WLAN discovery in lobby
+  private wlanDiscoveryTransport: WlanTransport | null = null;
+
   async scanNearbyWlanRooms(): Promise<NearbyWlanRoom[]> {
-    if (!this.transport || !(this.transport instanceof WlanTransport)) {
-      const tempWlan = new WlanTransport();
-      return tempWlan.scanNearbyRooms();
+    if (this.transport instanceof WlanTransport && this.transport.scanNearbyRooms) {
+      return this.transport.scanNearbyRooms();
     }
-    return this.transport.scanNearbyRooms ? this.transport.scanNearbyRooms() : [];
+    if (!this.wlanDiscoveryTransport) {
+      this.wlanDiscoveryTransport = new WlanTransport();
+    }
+    return this.wlanDiscoveryTransport.scanNearbyRooms();
+  }
+
+  /** Start background UDP discovery so beacons accumulate before user taps Scan. */
+  startWlanBackgroundDiscovery(): void {
+    try {
+      if (this.transport instanceof WlanTransport && this.transport.startBackgroundDiscovery) {
+        this.transport.startBackgroundDiscovery();
+        return;
+      }
+      if (!this.wlanDiscoveryTransport) {
+        this.wlanDiscoveryTransport = new WlanTransport();
+      }
+      this.wlanDiscoveryTransport.startBackgroundDiscovery();
+    } catch (_) {}
   }
 
   async createRoom(
@@ -320,7 +339,11 @@ export class MultiplayerSession {
       const connected = await this.transport?.connect(formattedCode, this.localPlayer, options);
       if (!connected) {
         MPDiagnostics.logJoinRejected(formattedCode, player.id, 'HOST_NOT_RESOLVED_OR_UNREACHABLE');
-        throw new ProductionError('ROOM_NOT_FOUND', `WLAN Room ${formattedCode} not found or unreachable on local network.`);
+        throw new ProductionError(
+          'ROOM_NOT_FOUND',
+          `WLAN Room ${formattedCode} not found or unreachable on local network.`,
+          `Could not connect to WLAN Room "${formattedCode}". Make sure both devices are connected to the same Wi-Fi or Hotspot, and the Host is waiting in the Lobby.`
+        );
       }
 
       const room: MultiplayerRoom = {
@@ -554,6 +577,13 @@ export class MultiplayerSession {
 
     this.authoritativeRevision = 1;
     this.seenCommandIds.clear();
+
+    // Section 26 & 27: WLAN Preflight Ping/Pong and State verification
+    if (this.mode === 'WLAN') {
+      console.log('[WLAN_PREFLIGHT] Broadcasting PING and TEST_STATE (rev 1, HELLO)...');
+      await this.sendPing().catch(() => {});
+      await this.sendTestState(1, 'HELLO').catch(() => {});
+    }
 
     const deckType = this.room.rules.deckType || 'NORMAL';
     // Part 1: exactly 112 cards for NORMAL, 168 cards for NO_MERCY
@@ -952,6 +982,10 @@ export class MultiplayerSession {
             playerId: command.playerId,
             hand,
           });
+
+          // Check if drawing triggered 25-card Mercy Rule in No Mercy
+          const isOver = await this.evaluateAuthoritativeCompletion();
+          if (isOver) break;
         }
         break;
       }
@@ -967,6 +1001,9 @@ export class MultiplayerSession {
           activeColor: command.chosenColor,
           revision: this.authoritativeRevision,
         });
+
+        const isOver = await this.evaluateAuthoritativeCompletion();
+        if (isOver) break;
 
         this.advanceAuthoritativeTurn();
         break;
@@ -1004,6 +1041,14 @@ export class MultiplayerSession {
         this.authoritativePhase = 'PLAYING';
         this.authoritativeChoiceOwnerId = null;
 
+        // Verify target is active (not FINISHED or ELIMINATED)
+        const targetP = players.find(p => p.id === command.targetPlayerId);
+        if (targetP && (targetP.status === 'FINISHED' || targetP.status === 'ELIMINATED' || targetP.isEliminated)) {
+          console.warn(`[AuthoritativeEngine] Target ${command.targetPlayerId} is not active; skipping swap`);
+          this.advanceAuthoritativeTurn();
+          break;
+        }
+
         const p1Hand = this.authoritativeHands.get(command.playerId) || [];
         const p2Hand = this.authoritativeHands.get(command.targetPlayerId) || [];
 
@@ -1035,6 +1080,9 @@ export class MultiplayerSession {
           playerId: command.targetPlayerId,
           hand: p1Hand,
         });
+
+        const isOver = await this.evaluateAuthoritativeCompletion();
+        if (isOver) break;
 
         this.advanceAuthoritativeTurn();
         break;
@@ -1084,6 +1132,9 @@ export class MultiplayerSession {
             hand,
           });
 
+          const isOver = await this.evaluateAuthoritativeCompletion();
+          if (isOver) break;
+
           // Player takes penalty and loses turn
           this.advanceAuthoritativeTurn(1);
         }
@@ -1105,27 +1156,37 @@ export class MultiplayerSession {
     }
   }
 
-  // Card Play Resolution helper
-  private async resolveAuthoritativeCardPlay(card: UnoCard, playerId: string, wildColor?: UnoColor) {
+  // Helper to construct authoritative Player[] with real hands from authoritativeHands map
+  private buildAuthoritativePlayerList(): Player[] {
     const players = this.room!.players;
-    const isNoMercy = this.room!.rules.deckType === 'NO_MERCY';
+    return players.map(p => {
+      const authHand = this.authoritativeHands.get(p.id) || [];
+      return {
+        id: p.id,
+        name: p.name,
+        avatar: p.avatar,
+        isHuman: true,
+        controller: p.id === this.localPlayer?.id ? 'LOCAL_HUMAN' : 'REMOTE_HUMAN',
+        hand: authHand,
+        cardCount: authHand.length,
+        isEliminated: Boolean(p.isEliminated),
+        status: (p.status || 'ACTIVE') as PlayerStatus,
+        finishRank: p.finishRank,
+      };
+    });
+  }
 
-    // 1. Evaluate Completion & Game End via Authoritative Engine
-    const playerList: Player[] = players.map(p => ({
-      id: p.id,
-      name: p.name,
-      avatar: p.avatar,
-      isHuman: true,
-      hand: this.authoritativeHands.get(p.id) || [],
-      cardCount: p.cardCount,
-      isEliminated: p.isEliminated,
-      status: p.status,
-      finishRank: p.finishRank,
-    }));
+  // Authoritative Completion & Win Evaluation (Host Only)
+  // Single source of truth: Evaluates player completion strictly from authoritative hand sizes.
+  // Returns true if match has ended, false otherwise.
+  private async evaluateAuthoritativeCompletion(): Promise<boolean> {
+    if (!this.room) return false;
+    const players = this.room.players;
+    const playerList = this.buildAuthoritativePlayerList();
 
     const completionEval = UnoGameEngine.evaluatePlayerCompletion(
       playerList,
-      this.room!.rules,
+      this.room.rules,
       this.authoritativeFinishingOrder,
       this.authoritativeEliminatedOrder
     );
@@ -1139,6 +1200,7 @@ export class MultiplayerSession {
         rp.status = up.status;
         rp.finishRank = up.finishRank;
         rp.isEliminated = up.isEliminated;
+        rp.cardCount = up.cardCount;
       }
     });
 
@@ -1154,8 +1216,23 @@ export class MultiplayerSession {
       });
     }
 
+    if (completionEval.justEliminatedPlayerId) {
+      await this.transport?.broadcastEvent({
+        type: 'PLAYER_ELIMINATED',
+        playerId: completionEval.justEliminatedPlayerId,
+        reason: 'MERCY_RULE_25_CARDS',
+        revision: this.authoritativeRevision,
+      });
+    }
+
     if (completionEval.isMatchOver) {
+      this.room.status = 'FINISHED';
       const winner = completionEval.winner || players[0];
+
+      if (this.mode === 'ONLINE') {
+        await SupabaseDataService.updateRoomStatus(this.room.code, 'FINISHED').catch(() => {});
+      }
+
       await this.transport?.broadcastEvent({
         type: 'PLAYER_WON',
         winnerId: winner?.id || '',
@@ -1164,51 +1241,110 @@ export class MultiplayerSession {
         finalResults: completionEval.finalResults,
         revision: this.authoritativeRevision,
       });
-      return;
+
+      await this.transport?.broadcastEvent({
+        type: 'MATCH_FINISHED',
+        winnerId: winner?.id || '',
+        winnerName: winner?.name || 'Player',
+        finishingOrder: this.authoritativeFinishingOrder,
+        finalResults: completionEval.finalResults,
+        revision: this.authoritativeRevision,
+      });
+      return true;
     }
 
-    // 2. Draw Stack accumulation
+    return false;
+  }
+
+  // Card Play Resolution helper (Host Only)
+  // Win check ONLY occurs after card play & card effects are fully applied and hand size reaches 0
+  private async resolveAuthoritativeCardPlay(card: UnoCard, playerId: string, wildColor?: UnoColor) {
+    const players = this.room!.players;
+    const isNoMercy = this.room!.rules.deckType === 'NO_MERCY';
+
+    // 1. Draw Stack accumulation
     const drawAmt = UnoDeckService.getDrawAmount(card);
     if (drawAmt > 0) {
       this.authoritativePendingDraw += drawAmt;
     }
 
-    // 3. Special actions
-    const activeEligiblePlayers = UnoGameEngine.getEligibleActivePlayers(playerList);
-    if (card.value === 'REVERSE') {
-      if (activeEligiblePlayers.length === 2) {
-        // Reverse acts as Skip with 2 players
-        this.advanceAuthoritativeTurn(1);
-      } else {
-        this.authoritativeDirection = this.authoritativeDirection === 'CW' ? 'CCW' : 'CW';
-        this.advanceAuthoritativeTurn();
-      }
-      return;
-    }
-
-    if (card.value === 'SKIP') {
-      this.advanceAuthoritativeTurn(1);
-      return;
-    }
-
-    if (card.value === 'SKIP_EVERYONE') {
+    // 2. Interactive choice cards (pause turn advancement until choice command is received)
+    if (card.value === '7' && isNoMercy) {
+      // 7 Swap Hands (Mandatory)
+      this.authoritativePhase = 'CHOOSING_SWAP_TARGET';
+      this.authoritativeChoiceOwnerId = playerId;
       await this.transport?.broadcastEvent({
-        type: 'SKIP_EVERYONE_TRIGGERED',
-        playerId,
+        type: 'PHASE_CHANGED',
+        phase: 'CHOOSING_SWAP_TARGET',
+        choiceOwnerId: playerId,
         revision: this.authoritativeRevision,
       });
-      // Player takes another turn immediately unless they finished their hand!
-      const playerObj = players.find(p => p.id === playerId);
-      if (playerObj && playerObj.status === 'FINISHED') {
-        this.advanceAuthoritativeTurn();
-      } else {
-        await this.broadcastTurnChange();
-      }
       return;
     }
 
+    if (card.value === 'CUSTOM_WILD') {
+      this.authoritativePhase = 'CHOOSING_CUSTOM_WILD_POWER';
+      this.authoritativeChoiceOwnerId = playerId;
+      await this.transport?.broadcastEvent({
+        type: 'PHASE_CHANGED',
+        phase: 'CHOOSING_CUSTOM_WILD_POWER',
+        choiceOwnerId: playerId,
+        revision: this.authoritativeRevision,
+      });
+      return;
+    }
+
+    if (card.value === 'WILD_COLOR_ROULETTE') {
+      // Determine next active player as target (skipping finished players)
+      const playerList = this.buildAuthoritativePlayerList();
+      const targetIndex = UnoGameEngine.getNextActivePlayerIndex(
+        playerList,
+        this.authoritativeCurrentIndex,
+        this.authoritativeDirection,
+        1
+      );
+      const targetPlayer = players[targetIndex];
+
+      this.authoritativePhase = 'CHOOSING_ROULETTE_COLOR';
+      this.authoritativeChoiceOwnerId = targetPlayer.id;
+
+      await this.transport?.broadcastEvent({
+        type: 'PHASE_CHANGED',
+        phase: 'CHOOSING_ROULETTE_COLOR',
+        choiceOwnerId: targetPlayer.id,
+        revision: this.authoritativeRevision,
+      });
+      return;
+    }
+
+    if (card.value === 'SHUFFLE_HANDS') {
+      // Dedicated Shuffle Hands
+      await this.executeAuthoritativeShuffleHands(playerId);
+      this.authoritativePhase = 'CHOOSING_WILD_COLOR';
+      this.authoritativeChoiceOwnerId = playerId;
+      await this.transport?.broadcastEvent({
+        type: 'PHASE_CHANGED',
+        phase: 'CHOOSING_WILD_COLOR',
+        choiceOwnerId: playerId,
+        revision: this.authoritativeRevision,
+      });
+      return;
+    }
+
+    if (UnoDeckService.isWildCard(card) && !wildColor) {
+      this.authoritativePhase = 'CHOOSING_WILD_COLOR';
+      this.authoritativeChoiceOwnerId = playerId;
+      await this.transport?.broadcastEvent({
+        type: 'PHASE_CHANGED',
+        phase: 'CHOOSING_WILD_COLOR',
+        choiceOwnerId: playerId,
+        revision: this.authoritativeRevision,
+      });
+      return;
+    }
+
+    // 3. Special immediate card actions
     if (card.value === 'DISCARD_ALL') {
-      // Discard all matching color cards
       const playerHand = this.authoritativeHands.get(playerId) || [];
       const { updatedPlayer, updatedDiscard, discardedCount } = UnoGameEngine.executeDiscardAll(
         { id: playerId, name: '', avatar: '', isHuman: true, hand: playerHand, cardCount: playerHand.length },
@@ -1235,98 +1371,87 @@ export class MultiplayerSession {
         hand: updatedPlayer.hand,
       });
 
-      this.advanceAuthoritativeTurn();
-      return;
-    }
+      const isOver = await this.evaluateAuthoritativeCompletion();
+      if (isOver) return;
 
-    if (card.value === '7' && isNoMercy) {
-      // 7 Swap Hands (Mandatory)
-      this.authoritativePhase = 'CHOOSING_SWAP_TARGET';
-      this.authoritativeChoiceOwnerId = playerId;
-      await this.transport?.broadcastEvent({
-        type: 'PHASE_CHANGED',
-        phase: 'CHOOSING_SWAP_TARGET',
-        choiceOwnerId: playerId,
-        revision: this.authoritativeRevision,
-      });
+      this.advanceAuthoritativeTurn();
       return;
     }
 
     if (card.value === '0' && isNoMercy) {
-      // 0 Pass Hands (Mandatory)
       await this.executeAuthoritativePassHands();
+      const isOver = await this.evaluateAuthoritativeCompletion();
+      if (isOver) return;
+
       this.advanceAuthoritativeTurn();
-      return;
-    }
-
-    if (card.value === 'SHUFFLE_HANDS') {
-      // Dedicated Shuffle Hands
-      await this.executeAuthoritativeShuffleHands(playerId);
-      this.authoritativePhase = 'CHOOSING_WILD_COLOR';
-      this.authoritativeChoiceOwnerId = playerId;
-      await this.transport?.broadcastEvent({
-        type: 'PHASE_CHANGED',
-        phase: 'CHOOSING_WILD_COLOR',
-        choiceOwnerId: playerId,
-        revision: this.authoritativeRevision,
-      });
-      return;
-    }
-
-    if (card.value === 'CUSTOM_WILD') {
-      this.authoritativePhase = 'CHOOSING_CUSTOM_WILD_POWER';
-      this.authoritativeChoiceOwnerId = playerId;
-      await this.transport?.broadcastEvent({
-        type: 'PHASE_CHANGED',
-        phase: 'CHOOSING_CUSTOM_WILD_POWER',
-        choiceOwnerId: playerId,
-        revision: this.authoritativeRevision,
-      });
       return;
     }
 
     if (card.value === 'WILD_REVERSE_DRAW_FOUR') {
-      // Direction MUST change before target selection
       this.authoritativeDirection = this.authoritativeDirection === 'CW' ? 'CCW' : 'CW';
       if (wildColor) this.authoritativeActiveColor = wildColor;
+      const isOver = await this.evaluateAuthoritativeCompletion();
+      if (isOver) return;
+
       this.advanceAuthoritativeTurn();
       return;
     }
 
-    if (card.value === 'WILD_COLOR_ROULETTE') {
-      // Determine next active player as target
-      const step = this.authoritativeDirection === 'CW' ? 1 : -1;
-      const targetIndex = (this.authoritativeCurrentIndex + step + players.length) % players.length;
-      const targetPlayer = players[targetIndex];
+    const playerList = this.buildAuthoritativePlayerList();
+    const activeEligiblePlayers = UnoGameEngine.getEligibleActivePlayers(playerList);
 
-      this.authoritativePhase = 'CHOOSING_ROULETTE_COLOR';
-      this.authoritativeChoiceOwnerId = targetPlayer.id;
-
-      await this.transport?.broadcastEvent({
-        type: 'PHASE_CHANGED',
-        phase: 'CHOOSING_ROULETTE_COLOR',
-        choiceOwnerId: targetPlayer.id,
-        revision: this.authoritativeRevision,
-      });
-      return;
-    }
-
-    if (UnoDeckService.isWildCard(card)) {
-      if (wildColor) {
-        this.authoritativeActiveColor = wildColor;
-        this.advanceAuthoritativeTurn();
+    if (card.value === 'REVERSE') {
+      if (activeEligiblePlayers.length === 2) {
+        // Reverse acts as Skip with 2 players
+        const isOver = await this.evaluateAuthoritativeCompletion();
+        if (isOver) return;
+        this.advanceAuthoritativeTurn(1);
       } else {
-        this.authoritativePhase = 'CHOOSING_WILD_COLOR';
-        this.authoritativeChoiceOwnerId = playerId;
-        await this.transport?.broadcastEvent({
-          type: 'PHASE_CHANGED',
-          phase: 'CHOOSING_WILD_COLOR',
-          choiceOwnerId: playerId,
-          revision: this.authoritativeRevision,
-        });
+        this.authoritativeDirection = this.authoritativeDirection === 'CW' ? 'CCW' : 'CW';
+        const isOver = await this.evaluateAuthoritativeCompletion();
+        if (isOver) return;
+        this.advanceAuthoritativeTurn();
       }
       return;
     }
+
+    if (card.value === 'SKIP') {
+      const isOver = await this.evaluateAuthoritativeCompletion();
+      if (isOver) return;
+      this.advanceAuthoritativeTurn(1);
+      return;
+    }
+
+    if (card.value === 'SKIP_EVERYONE') {
+      await this.transport?.broadcastEvent({
+        type: 'SKIP_EVERYONE_TRIGGERED',
+        playerId,
+        revision: this.authoritativeRevision,
+      });
+      const isOver = await this.evaluateAuthoritativeCompletion();
+      if (isOver) return;
+
+      const playerObj = players.find(p => p.id === playerId);
+      if (playerObj && playerObj.status === 'FINISHED') {
+        this.advanceAuthoritativeTurn();
+      } else {
+        await this.broadcastTurnChange();
+      }
+      return;
+    }
+
+    if (UnoDeckService.isWildCard(card) && wildColor) {
+      this.authoritativeActiveColor = wildColor;
+      const isOver = await this.evaluateAuthoritativeCompletion();
+      if (isOver) return;
+
+      this.advanceAuthoritativeTurn();
+      return;
+    }
+
+    // 4. Normal Card: evaluate completion strictly AFTER card removal from hand
+    const isOver = await this.evaluateAuthoritativeCompletion();
+    if (isOver) return;
 
     this.advanceAuthoritativeTurn();
   }
@@ -1489,24 +1614,16 @@ export class MultiplayerSession {
       hand: result.updatedPlayer.hand,
     });
 
+    const isOver = await this.evaluateAuthoritativeCompletion();
+    if (isOver) return;
+
     // Target loses turn
     this.advanceAuthoritativeTurn(1);
   }
 
   private advanceAuthoritativeTurn(extraSkips: number = 0) {
-    const players = this.room!.players;
     const stepMultiplier = 1 + extraSkips;
-
-    const playerList: Player[] = players.map(p => ({
-      id: p.id,
-      name: p.name,
-      avatar: p.avatar,
-      isHuman: true,
-      hand: this.authoritativeHands.get(p.id) || [],
-      cardCount: p.cardCount,
-      isEliminated: p.isEliminated,
-      status: p.status,
-    }));
+    const playerList = this.buildAuthoritativePlayerList();
 
     this.authoritativeCurrentIndex = UnoGameEngine.getNextActivePlayerIndex(
       playerList,
@@ -1594,12 +1711,16 @@ export class MultiplayerSession {
       return;
     }
 
-    // Phase 10: State Synchronization Test
+    // Section 27: State Synchronization Test (Host HELLO rev 1 -> Client WORLD rev 2)
     if (event.type === 'TEST_STATE') {
       MPDiagnostics.logStateReceived(this.room.code, event.revision);
-      if (this.isHost() && event.revision === 1) {
-        // Host receives revision 1, responds with revision 2
-        this.sendTestState(2, 'HOST_REVISION_2');
+      if (!this.isHost() && event.testValue === 'HELLO') {
+        console.log('[WLAN_TEST_STATE] Client received rev 1 HELLO from host. Responding with rev 2 WORLD...');
+        setTimeout(() => {
+          this.sendTestState(2, 'WORLD').catch(() => {});
+        }, 80);
+      } else if (this.isHost() && event.testValue === 'WORLD') {
+        console.log('[WLAN_TEST_STATE_VERIFIED] Host received rev 2 WORLD from client. Bidirectional WLAN verified!');
       }
       return;
     }

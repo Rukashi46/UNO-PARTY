@@ -57,8 +57,8 @@ const ERROR_MESSAGES: Record<KnownErrorCode, string> = {
 export class ProductionError extends Error {
   public code: KnownErrorCode;
 
-  constructor(code: KnownErrorCode, internalDebugMessage?: string) {
-    super(ERROR_MESSAGES[code] || ERROR_MESSAGES.UNKNOWN_ERROR);
+  constructor(code: KnownErrorCode, internalDebugMessage?: string, userFacingMessage?: string) {
+    super(userFacingMessage || ERROR_MESSAGES[code] || ERROR_MESSAGES.UNKNOWN_ERROR);
     this.code = code;
     this.name = 'ProductionError';
 

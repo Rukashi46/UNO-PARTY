@@ -185,7 +185,11 @@ export class UnoGameEngine {
 
     // 1. Process player statuses
     let updatedPlayers: Player[] = players.map(p => {
-      const cardCount = p.hand ? p.hand.length : p.cardCount;
+      // In multiplayer, remote players' hands are private and hidden (p.hand is dummy [] while p.cardCount > 0).
+      // We must not treat a hidden hand as 0 cards, otherwise remote players are instantly marked finished!
+      const cardCount = (p.controller === 'REMOTE_HUMAN' || (p.cardCount && p.cardCount > 0 && (!p.hand || p.hand.length === 0)))
+        ? (p.cardCount ?? 0)
+        : (p.hand ? p.hand.length : (p.cardCount ?? 0));
       let status: PlayerStatus = p.status || (p.isEliminated ? 'ELIMINATED' : 'ACTIVE');
       let isEliminated = p.isEliminated || status === 'ELIMINATED';
 

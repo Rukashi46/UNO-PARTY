@@ -209,6 +209,10 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
       setRoom(null);
       setConnectionStatus('DISCONNECTED');
       if (mode === 'WLAN') {
+        // Start UDP discovery listener immediately so beacons accumulate in the
+        // background. When user taps "Scan Again" the listener will already have
+        // collected packets from nearby hosts.
+        session.startWlanBackgroundDiscovery();
         handleScanWlan();
       }
     }
@@ -423,18 +427,22 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
 
           {/* Join with Code Card */}
           <View style={styles.joinCodeCard}>
-            <Text style={styles.sectionLabel}>JOIN WITH ROOM CODE</Text>
+            <Text style={styles.sectionLabel}>
+              {mode === 'WLAN' ? 'JOIN BY ROOM CODE OR IP' : 'JOIN WITH ROOM CODE'}
+            </Text>
             <Text style={styles.joinCodeSub}>
-              Enter the 6-character room code from the host
+              {mode === 'WLAN'
+                ? 'Enter the room code (e.g. K7P4Q2) or host IP (e.g. 192.168.1.5)'
+                : 'Enter the 6-character room code from the host'}
             </Text>
             <View style={styles.joinCodeInputRow}>
               <TextInput
                 style={styles.joinCodeInput}
                 value={joinCodeInput}
                 onChangeText={t => setJoinCodeInput(t.toUpperCase())}
-                placeholder="e.g. AB7K2Q"
+                placeholder={mode === 'WLAN' ? 'e.g. K7P4Q2 or 192.168.1.5' : 'e.g. AB7K2Q'}
                 placeholderTextColor="#64748B"
-                maxLength={8}
+                maxLength={32}
                 autoCapitalize="characters"
                 autoCorrect={false}
               />
@@ -813,17 +821,21 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
       <Modal visible={isJoinModalOpen} transparent animationType="fade">
         <View style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>ENTER ROOM CODE</Text>
+            <Text style={styles.modalTitle}>
+              {mode === 'WLAN' ? 'ENTER ROOM CODE OR IP' : 'ENTER ROOM CODE'}
+            </Text>
             <Text style={styles.modalSubtitle}>
-              {mode === 'WLAN' ? 'Enter the local WLAN room code' : 'Enter the 6-character room code'}
+              {mode === 'WLAN' ? 'Enter the local WLAN room code or host IP' : 'Enter the 6-character room code'}
             </Text>
             <TextInput
               style={styles.modalInput}
               value={joinCodeInput}
               onChangeText={setJoinCodeInput}
-              placeholder={mode === 'WLAN' ? 'e.g. K7P4Q2' : 'e.g. ABC123'}
+              placeholder={mode === 'WLAN' ? 'e.g. K7P4Q2 or 192.168.1.5' : 'e.g. ABC123'}
               placeholderTextColor="#64748B"
+              maxLength={32}
               autoCapitalize="characters"
+              autoCorrect={false}
             />
             <View style={styles.modalBtnRow}>
               <Pressable

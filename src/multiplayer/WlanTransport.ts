@@ -15,6 +15,8 @@ const DEFAULT_WLAN_PORT = 8088;
 
 // Shared LAN registry for local simulation / loopback / processes on same machine
 const GLOBAL_LAN_REGISTRY = new Map<string, { room: NearbyWlanRoom; timestamp: number }>();
+// Global persistent cache for all discovered WLAN rooms across all transport instances
+const GLOBAL_DISCOVERED_WLAN_ROOMS = new Map<string, NearbyWlanRoom>();
 
 export class WlanTransport implements MultiplayerTransport {
   private socket: WebSocket | null = null;
@@ -58,6 +60,10 @@ export class WlanTransport implements MultiplayerTransport {
                 lastSeen: Date.now(),
               };
               this.discoveredRemoteRooms.set(nearby.code, nearby);
+              GLOBAL_DISCOVERED_WLAN_ROOMS.set(nearby.code, nearby);
+              console.log(
+                `[WLAN_BEACON_RECEIVED]\nroomCode=${nearby.code}\nhostIp=${nearby.hostAddress}\nhostPort=${nearby.port}\nhostPlayerId=${nearby.hostPlayerId}`
+              );
               MPDiagnostics.logDiscovery(nearby.code, nearby.hostPlayerId || 'HOST', nearby.hostAddress || 'N/A', nearby.port || DEFAULT_WLAN_PORT);
             }
           } catch (_) {}
@@ -230,6 +236,21 @@ export class WlanTransport implements MultiplayerTransport {
 
     MPDiagnostics.logCreate('WLAN', code, roomInfo.hostPlayerId || 'HOST', '');
 
+    const nativeAvailable = Boolean(NativeModules.WlanNativeModule);
+    console.log(`[WLAN_NATIVE]\navailable=${nativeAvailable}`);
+
+    let hostIp = roomInfo.hostAddress || '127.0.0.1';
+    if (NativeModules.WlanNativeModule?.getLocalIpAddress) {
+      try {
+        hostIp = await NativeModules.WlanNativeModule.getLocalIpAddress();
+      } catch (_) {}
+    }
+    this.advertisedRoom.hostAddress = hostIp;
+
+    console.log(
+      `[WLAN_HOST]\nroomCode=${code}\nhostIp=${hostIp}\nhostPort=${roomInfo.port || DEFAULT_WLAN_PORT}\nplayerId=${roomInfo.hostPlayerId || 'HOST'}\nnativeModuleAvailable=${nativeAvailable}`
+    );
+
     // 1. Register in local process registry
     GLOBAL_LAN_REGISTRY.set(code, {
       room: this.advertisedRoom,
@@ -289,12 +310,16 @@ export class WlanTransport implements MultiplayerTransport {
     const seenCodes = new Set<string>();
 
     MPDiagnostics.logDiscoveryStart('WLAN');
+    console.log('[WLAN_DISCOVERY_START]');
 
-    // 1. Check Native Android discovery results
+    // 1. Start native discovery and wait a window for UDP beacons to arrive.
+    //    The host broadcasts every ~1800 ms, so 2200 ms ensures at least 1 packet.
     try {
       const nativeMod = NativeModules.WlanNativeModule;
       if (nativeMod && nativeMod.startDiscovery) {
-        nativeMod.startDiscovery().catch(() => {});
+        await nativeMod.startDiscovery().catch(() => {});
+        // Wait for beacon packets to arrive before querying
+        await new Promise<void>(resolve => setTimeout(resolve, 2200));
       }
       if (nativeMod && nativeMod.getDiscoveredRooms) {
         const nativeList: string[] = await nativeMod.getDiscoveredRooms();
@@ -305,7 +330,7 @@ export class WlanTransport implements MultiplayerTransport {
               if (r && r.code) {
                 const code = r.code.toUpperCase();
                 seenCodes.add(code);
-                result.push({
+                const roomObj: NearbyWlanRoom = {
                   code,
                   hostName: r.hostName || 'HOST',
                   hostPlayerId: r.hostPlayerId,
@@ -316,7 +341,9 @@ export class WlanTransport implements MultiplayerTransport {
                   hostAddress: r.hostAddress,
                   port: r.port || DEFAULT_WLAN_PORT,
                   lastSeen: now,
-                });
+                };
+                result.push(roomObj);
+                GLOBAL_DISCOVERED_WLAN_ROOMS.set(code, roomObj);
               }
             } catch (_) {}
           }
@@ -324,7 +351,7 @@ export class WlanTransport implements MultiplayerTransport {
       }
     } catch (_) {}
 
-    // 2. Check cached listener discovered rooms
+    // 2. Check cached listener discovered rooms (populated by onWlanRoomDiscovered)
     for (const [code, r] of this.discoveredRemoteRooms.entries()) {
       if (now - (r.lastSeen || 0) < BEACON_TTL_MS) {
         if (!seenCodes.has(code)) {
@@ -333,6 +360,18 @@ export class WlanTransport implements MultiplayerTransport {
         }
       } else {
         this.discoveredRemoteRooms.delete(code);
+      }
+    }
+
+    // 2b. Check global persistent discovered rooms
+    for (const [code, r] of GLOBAL_DISCOVERED_WLAN_ROOMS.entries()) {
+      if (now - (r.lastSeen || 0) < BEACON_TTL_MS) {
+        if (!seenCodes.has(code)) {
+          seenCodes.add(code);
+          result.push(r);
+        }
+      } else {
+        GLOBAL_DISCOVERED_WLAN_ROOMS.delete(code);
       }
     }
 
@@ -352,6 +391,31 @@ export class WlanTransport implements MultiplayerTransport {
     const remoteRooms = result.filter(r => !this.advertisedRoom || r.code !== this.advertisedRoom.code);
 
     return remoteRooms;
+  }
+
+  /**
+   * Start native UDP discovery in the background without waiting for results.
+   * Call this when the WLAN lobby opens so the onWlanRoomDiscovered listener
+   * populates discoveredRemoteRooms before the user taps "Scan Again".
+   */
+  startBackgroundDiscovery(): void {
+    console.log('[WLAN_DISCOVERY_START]');
+    try {
+      const nativeMod = NativeModules.WlanNativeModule;
+      if (nativeMod && nativeMod.startDiscovery) {
+        nativeMod.startDiscovery().catch(() => {});
+      }
+    } catch (_) {}
+  }
+
+  async getLocalIpAddress(): Promise<string> {
+    try {
+      const nativeMod = NativeModules.WlanNativeModule;
+      if (nativeMod && nativeMod.getLocalIpAddress) {
+        return await nativeMod.getLocalIpAddress();
+      }
+    } catch (_) {}
+    return '127.0.0.1';
   }
 
   async connect(
@@ -383,20 +447,40 @@ export class WlanTransport implements MultiplayerTransport {
     let targetPort = options?.port || DEFAULT_WLAN_PORT;
 
     if (!targetAddress) {
-      const nearbyRooms = await this.scanNearbyRooms();
-      const targetRoom = nearbyRooms.find(r => r.code === formattedCode);
-      if (targetRoom && targetRoom.hostAddress) {
-        targetAddress = targetRoom.hostAddress;
-        targetPort = targetRoom.port || DEFAULT_WLAN_PORT;
-      } else if (formattedCode.includes(':')) {
-        const parts = formattedCode.split(':');
-        targetAddress = parts[0];
-        targetPort = parseInt(parts[1], 10) || DEFAULT_WLAN_PORT;
+      // 1. Check if user typed IP directly, e.g. "192.168.1.5" or "192.168.1.5:8088"
+      const ipMatch = formattedCode.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})(?::(\d+))?$/);
+      if (ipMatch) {
+        targetAddress = ipMatch[1];
+        if (ipMatch[2]) {
+          targetPort = parseInt(ipMatch[2], 10);
+        }
+      } else if (formattedCode.includes('@')) {
+        const parts = formattedCode.split('@');
+        targetAddress = parts[1];
       } else {
-        const localEntry = GLOBAL_LAN_REGISTRY.get(formattedCode);
-        if (localEntry && localEntry.room.hostAddress) {
-          targetAddress = localEntry.room.hostAddress;
-          targetPort = localEntry.room.port || DEFAULT_WLAN_PORT;
+        // 2. Check global discovered cache first (instant hit)
+        const cached = GLOBAL_DISCOVERED_WLAN_ROOMS.get(formattedCode);
+        if (cached && cached.hostAddress) {
+          targetAddress = cached.hostAddress;
+          targetPort = cached.port || DEFAULT_WLAN_PORT;
+        } else {
+          // 3. Scan nearby rooms
+          const nearbyRooms = await this.scanNearbyRooms();
+          const targetRoom = nearbyRooms.find(r => r.code === formattedCode);
+          if (targetRoom && targetRoom.hostAddress) {
+            targetAddress = targetRoom.hostAddress;
+            targetPort = targetRoom.port || DEFAULT_WLAN_PORT;
+          } else if (formattedCode.includes(':')) {
+            const parts = formattedCode.split(':');
+            targetAddress = parts[0];
+            targetPort = parseInt(parts[1], 10) || DEFAULT_WLAN_PORT;
+          } else {
+            const localEntry = GLOBAL_LAN_REGISTRY.get(formattedCode);
+            if (localEntry && localEntry.room.hostAddress) {
+              targetAddress = localEntry.room.hostAddress;
+              targetPort = localEntry.room.port || DEFAULT_WLAN_PORT;
+            }
+          }
         }
       }
     }
