@@ -128,7 +128,10 @@ export type GameEvent =
       playedCard?: UnoCard;
       playerWhoPlayed?: string;
     }
-  | { type: 'SYNC_STATE'; state: PublicMatchState; privateHand?: UnoCard[] };
+  | { type: 'SYNC_STATE'; state: PublicMatchState; privateHand?: UnoCard[]; targetPlayerId?: string }
+  | { type: 'PLAYER_DISCONNECTED'; playerId: string; graceMs: number }
+  | { type: 'PLAYER_RECONNECTED'; playerId: string }
+  | { type: 'ROOM_CLOSED'; reason: string };
 
 export interface PublicMatchState {
   roomId: string;

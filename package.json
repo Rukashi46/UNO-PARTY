@@ -7,8 +7,10 @@
     "@react-native-async-storage/async-storage": "2.2.0",
     "@supabase/supabase-js": "^2.117.2",
     "expo": "~57.0.25",
+    "expo-build-properties": "~57.0.22",
     "expo-font": "~57.0.4",
     "expo-haptics": "~57.0.3",
+    "expo-network": "~57.0.2",
     "expo-screen-orientation": "~57.0.2",
     "expo-splash-screen": "~57.0.9",
     "expo-status-bar": "~57.0.1",
@@ -18,18 +20,23 @@
     "react-native-gesture-handler": "~2.32.0",
     "react-native-reanimated": "4.5.1",
     "react-native-safe-area-context": "~5.7.0",
+    "react-native-tcp-socket": "^6.4.3",
     "react-native-web": "^0.21.2",
     "react-native-worklets": "0.10.1"
   },
   "devDependencies": {
     "@types/react": "~19.2.2",
-    "typescript": "~6.0.3"
+    "@types/ws": "^8.18.2",
+    "tsx": "^4.23.15",
+    "typescript": "~6.0.3",
+    "ws": "^8.22.0"
   },
   "scripts": {
     "start": "expo start",
     "android": "expo run:android",
     "ios": "expo run:ios",
-    "web": "expo start --web"
+    "web": "expo start --web",
+    "test:wlan": "npx tsx tests/test_wlan_ws_server.ts && node --require ./tests/setup.cjs --import tsx tests/test_wlan_transport_real.ts && node --require ./tests/setup.cjs --import tsx tests/test_wlan_full_match.ts"
   },
   "private": true
 }

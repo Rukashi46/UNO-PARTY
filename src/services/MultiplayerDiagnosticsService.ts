@@ -57,7 +57,7 @@ class DiagnosticsManager {
 
   private checkNativeWlan() {
     try {
-      const available = Boolean(NativeModules.WlanNativeModule && Platform.OS === 'android');
+      const available = Platform.OS !== 'web';
       this.state.nativeWlanAvailable = available;
     } catch (_) {
       this.state.nativeWlanAvailable = false;

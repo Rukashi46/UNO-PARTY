@@ -234,8 +234,8 @@ export class UnoGameEngine {
       if (finishingOrder.length >= 1) {
         isMatchOver = true;
         winner = updatedPlayers.find(p => p.id === finishingOrder[0]) || null;
-      } else if (rules.deckType === 'NO_MERCY' && activePlayers.length === 1 && updatedPlayers.length > 1) {
-        // Last standing player wins No Mercy by elimination of all opponents
+      } else if ((rules.deckType === 'NO_MERCY' || eliminatedOrder.length > 0) && activePlayers.length === 1 && updatedPlayers.length > 1) {
+        // Last standing player wins when every opponent was eliminated (No Mercy mercy rule, or players who left the match)
         isMatchOver = true;
         winner = activePlayers[0];
         if (!finishingOrder.includes(winner.id)) {

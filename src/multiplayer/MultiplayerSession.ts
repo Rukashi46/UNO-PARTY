@@ -174,6 +174,16 @@ export class MultiplayerSession {
 
     await this.initTransport(mode);
 
+    if (mode === 'WLAN' && this.transport instanceof WlanTransport) {
+      this.transport.setHostSnapshotProvider(() => ({
+        hostId: this.room!.hostId,
+        rules: this.room!.rules,
+        maxPlayers: this.room!.maxPlayers,
+        status: this.room!.status,
+        players: this.room!.players,
+      }));
+    }
+
     if (mode === 'WLAN' && this.transport?.startAdvertising) {
       await this.transport.startAdvertising({
         code,
@@ -346,13 +356,14 @@ export class MultiplayerSession {
         );
       }
 
+      const info = this.transport instanceof WlanTransport ? this.transport.acceptedInfo : null;
       const room: MultiplayerRoom = {
-        id: formattedCode,
-        code: formattedCode,
-        hostId: '',
+        id: info?.roomId || formattedCode,
+        code: info?.roomId || formattedCode,
+        hostId: info?.hostId || '',
         status: 'WAITING',
         mode: 'WLAN',
-        rules: {
+        rules: info?.rules || {
           deckType: 'NORMAL',
           stacking: true,
           sevenZeroRule: false,
@@ -364,8 +375,10 @@ export class MultiplayerSession {
           soundEnabled: true,
           hapticsEnabled: true,
         },
-        maxPlayers: 10,
-        players: [{ ...this.localPlayer }],
+        maxPlayers: info?.maxPlayers || 10,
+        players: Array.isArray(info?.members)
+          ? info.members.map((p: RoomPlayer) => ({ ...p, controller: p.id === player.id ? 'LOCAL_HUMAN' : 'REMOTE_HUMAN' }))
+          : [{ ...this.localPlayer }],
       };
 
       this.room = room;
@@ -632,6 +645,7 @@ export class MultiplayerSession {
     this.authoritativeChoiceOwnerId = null;
 
     this.room.status = 'PLAYING';
+    if (this.transport instanceof WlanTransport) this.transport.setRoomStatus('PLAYING');
 
     if (this.mode === 'ONLINE') {
       await SupabaseDataService.updateRoomStatus(this.room.code, 'PLAYING');
@@ -905,6 +919,8 @@ export class MultiplayerSession {
         const cardIndex = hand.findIndex(c => c.id === command.cardId);
         if (cardIndex === -1) {
           MPDiagnostics.logGameValidate(false, `Card ${command.cardId} not found in player hand (hand size ${hand.length})`);
+          // The client's view diverged from the authoritative hand: repair it.
+          this.resyncPlayer(command.playerId).catch(() => {});
           return;
         }
 
@@ -921,7 +937,10 @@ export class MultiplayerSession {
         );
 
         MPDiagnostics.logGameValidate(canPlay, canPlay ? 'OK' : 'INVALID_MATCH');
-        if (!canPlay) return;
+        if (!canPlay) {
+          this.resyncPlayer(command.playerId).catch(() => {});
+          return;
+        }
 
         MPDiagnostics.logGameEngine('PLAY_CARD', command.playerId);
 
@@ -943,6 +962,13 @@ export class MultiplayerSession {
           activeColor: card.color === 'WILD' ? (command.wildColor || this.authoritativeActiveColor) : card.color,
           pendingDrawStack: this.authoritativePendingDraw,
           revision: this.authoritativeRevision,
+        });
+
+        // Keep the player's private hand authoritative (never rely on the client guessing the removal)
+        await this.transport?.broadcastEvent({
+          type: 'PRIVATE_HAND_UPDATE',
+          playerId: command.playerId,
+          hand: [...hand],
         });
 
         // Resolve special card actions
@@ -1157,6 +1183,70 @@ export class MultiplayerSession {
   }
 
   // Helper to construct authoritative Player[] with real hands from authoritativeHands map
+
+  /** Host: bring a (re)connected player back to the current table state. */
+  async resyncPlayer(playerId: string): Promise<void> {
+    if (!this.isHost() || !this.room || this.room.status === 'WAITING') return;
+    const topCard = this.authoritativeDiscard[this.authoritativeDiscard.length - 1] || null;
+    const state: PublicMatchState = {
+      roomId: this.room.code,
+      topCard,
+      activeColor: this.authoritativeActiveColor,
+      currentPlayerId: this.room.players[this.authoritativeCurrentIndex]?.id || '',
+      direction: this.authoritativeDirection,
+      pendingDrawStack: this.authoritativePendingDraw,
+      drawPileCount: this.authoritativeDeck.length,
+      players: this.room.players.map(p => ({ ...p })),
+      discardPile: [...this.authoritativeDiscard],
+      rules: this.room.rules,
+      status: this.room.status === 'FINISHED' ? 'FINISHED' : 'PLAYING',
+      gamePhase: this.authoritativePhase,
+      choiceOwnerId: this.authoritativeChoiceOwnerId || undefined,
+      revision: this.authoritativeRevision,
+      finishingOrder: [...this.authoritativeFinishingOrder],
+    };
+    await this.transport?.broadcastEvent({
+      type: 'SYNC_STATE',
+      state,
+      privateHand: [...(this.authoritativeHands.get(playerId) || [])],
+      targetPlayerId: playerId,
+    });
+  }
+
+  /**
+   * Host: a player left (or timed out) during a match. Their cards go to the
+   * bottom of the draw pile, any pending choice/turn is released and the
+   * match is re-evaluated so it can never stall on a missing player.
+   */
+  private async forfeitAuthoritativePlayer(playerId: string): Promise<void> {
+    if (!this.isHost() || !this.room || this.room.status !== 'PLAYING') return;
+    const p = this.room.players.find(x => x.id === playerId);
+    if (!p) return;
+    const wasCurrent = this.room.players[this.authoritativeCurrentIndex]?.id === playerId;
+    const hand = this.authoritativeHands.get(playerId) || [];
+    this.authoritativeDeck = [...hand, ...this.authoritativeDeck];
+    this.authoritativeHands.set(playerId, []);
+    p.cardCount = 0;
+    p.isEliminated = true;
+    p.status = 'ELIMINATED';
+    p.isConnected = false;
+    if (!this.authoritativeEliminatedOrder.includes(playerId)) this.authoritativeEliminatedOrder.push(playerId);
+    this.authoritativeRevision++;
+    await this.transport?.broadcastEvent({
+      type: 'PLAYER_ELIMINATED', playerId, reason: 'LEFT_MATCH', revision: this.authoritativeRevision,
+    });
+    if (await this.evaluateAuthoritativeCompletion()) return;
+    if (wasCurrent || this.authoritativeChoiceOwnerId === playerId) {
+      this.authoritativeChoiceOwnerId = null;
+      this.authoritativePhase = 'PLAYING';
+      this.authoritativePendingDraw = 0;
+      this.authoritativeRevision++;
+      this.advanceAuthoritativeTurn();
+    } else {
+      await this.broadcastTurnChange();
+    }
+  }
+
   private buildAuthoritativePlayerList(): Player[] {
     const players = this.room!.players;
     return players.map(p => {
@@ -1738,6 +1828,11 @@ export class MultiplayerSession {
       event.type === 'END_TURN'
     );
 
+    if (event.type === 'REQUEST_SYNC' && this.isHost()) {
+      this.resyncPlayer(event.playerId).catch(() => {});
+      return;
+    }
+
     if (isCommand && event.commandId) {
       if (this.isHost()) {
         MPDiagnostics.logCommandReceived(this.room.code, event.playerId, event.commandId, event.type);
@@ -1799,13 +1894,69 @@ export class MultiplayerSession {
             controller: p.id === this.localPlayer?.id ? 'LOCAL_HUMAN' : 'REMOTE_HUMAN',
           }));
           this.room.players = players;
+          if (event.hostId) this.room.hostId = event.hostId;
+          if (event.rules) this.room.rules = event.rules;
+          if (typeof event.maxPlayers === 'number') this.room.maxPlayers = event.maxPlayers;
+          if (event.roomId) { this.room.code = event.roomId; this.room.id = event.roomId; }
           MPDiagnostics.logJoinAccepted(this.room.code, this.localPlayer?.id || '', players);
           this.notifyState();
+          // Reconnected mid-match: ask the host to resend our hand and the table.
+          if (event.reconnect && event.status === 'PLAYING') {
+            this.transport?.sendCommand({ type: 'REQUEST_SYNC', commandId: this.makeCommandId(), playerId: this.localPlayer?.id || '' } as any).catch(() => {});
+          }
         }
         break;
       }
 
+      case 'PLAYER_DISCONNECTED': {
+        this.room.players = this.room.players.map(p => p.id === event.playerId ? { ...p, isConnected: false } : p);
+        this.notifyState();
+        break;
+      }
+
+      case 'PLAYER_RECONNECTED': {
+        this.room.players = this.room.players.map(p => p.id === event.playerId ? { ...p, isConnected: true } : p);
+        this.notifyState();
+        if (this.isHost()) this.resyncPlayer(event.playerId).catch(() => {});
+        break;
+      }
+
+      case 'SYNC_STATE': {
+        if (event.targetPlayerId && event.targetPlayerId !== this.localPlayer?.id) break;
+        const st = event.state;
+        if (st) {
+          this.publicMatchState = st;
+          this.room.status = st.status === 'FINISHED' ? 'FINISHED' : 'PLAYING';
+          this.room.players = st.players.map((p: any) => ({ ...p, controller: p.id === this.localPlayer?.id ? 'LOCAL_HUMAN' : 'REMOTE_HUMAN' }));
+          this.authoritativeDiscard = [...(st.discardPile || [])];
+          this.authoritativeActiveColor = st.activeColor;
+          this.authoritativeDirection = st.direction;
+          this.authoritativePendingDraw = st.pendingDrawStack;
+          const idx = this.room.players.findIndex(p => p.id === st.currentPlayerId);
+          if (idx !== -1) this.authoritativeCurrentIndex = idx;
+          if (typeof st.revision === 'number') this.authoritativeRevision = st.revision;
+        }
+        if (Array.isArray(event.privateHand)) this.localPrivateHand = [...event.privateHand];
+        this.notifyState();
+        break;
+      }
+
+      case 'ROOM_CLOSED': {
+        this.room.status = 'FINISHED';
+        this.notifyState();
+        break;
+      }
+
       case 'PLAYER_LEFT': {
+        if (this.room.status === 'PLAYING' && this.mode !== 'PLAY_BOTS' && this.mode !== 'PASS_AND_PLAY') {
+          // Mid-match: keep the seat (turn order depends on indices) and mark it eliminated.
+          this.room.players = this.room.players.map(p =>
+            p.id === event.playerId ? { ...p, isConnected: false, isEliminated: true, status: 'ELIMINATED' as PlayerStatus } : p
+          );
+          this.notifyState();
+          if (this.isHost()) this.forfeitAuthoritativePlayer(event.playerId).catch(() => {});
+          break;
+        }
         this.room.players = this.room.players.filter(p => p.id !== event.playerId);
         if (event.playerId === this.room.hostId && this.room.players.length > 0) {
           this.room.hostId = this.room.players[0].id;
