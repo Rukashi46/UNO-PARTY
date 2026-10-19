@@ -17,10 +17,10 @@ const waitFor = async (f: () => boolean, ms = 5000, what = '') => { const t = Da
 const P = (id: string, host = false) => ({ id, name: id, avatar: '🙂', isHost: host, isReady: false, isConnected: true, cardCount: 0 }) as any;
 const rules: any = { deckType: 'NORMAL', stacking: true, sevenZeroRule: false, jumpInRule: false, drawUntilPlayable: false, forcePlay: false, mercy25Cards: false, includeCustomWilds: false, soundEnabled: false, hapticsEnabled: false };
 
-async function setup() {
+async function setup(endMode: string = 'FIRST_PLAYER_WINS') {
   const mk = () => new (MultiplayerSession as any)() as MultiplayerSession;
   const [h, a, b] = [mk(), mk(), mk()];
-  await h.createRoom('WLAN', P('host', true), rules, 'TEST1');
+  await h.createRoom('WLAN', P('host', true), { ...rules, gameEndMode: endMode }, 'TEST1');
   const opts = { hostAddress: '127.0.0.1' };
   await a.joinRoom('WLAN', 'TEST1', P('alice'), opts);
   await b.joinRoom('WLAN', 'TEST1', P('bob'), opts);
@@ -92,6 +92,36 @@ tests.push(['guests leaving mid-match forfeit; last player standing wins instead
   await waitFor(() => log.host.some(e => e.type === 'PLAYER_WON'), 5000, 'host wins');
   assert.strictEqual(log.host.find(e => e.type === 'PLAYER_WON').winnerId, 'host');
   await h.leaveRoom();
+}]);
+
+tests.push(['PLAY_UNTIL_LAST_PLAYER over WLAN: everyone gets ranked, last player standing is placed last, match ends', async () => {
+  const { h, a, b, log, byId } = await setup('PLAY_UNTIL_LAST_PLAYER');
+  await h.startMatch();
+  await waitFor(() => a.getLocalPrivateHand().length === 7 && b.getLocalPrivateHand().length === 7, 5000, 'deal');
+  let turns = 0;
+  while (!log.host.some(e => e.type === 'MATCH_FINISHED') && turns++ < 6000) {
+    const cur = h.getAuthoritativeCurrentPlayerId();
+    const rev = h.getRevision();
+    const phase = (h as any).authoritativePhase as string;
+    const owner = (h as any).authoritativeChoiceOwnerId as string | null;
+    if (phase !== 'PLAYING' && owner) {
+      const o = byId[owner];
+      if (phase === 'CHOOSING_CUSTOM_WILD_POWER') await o.chooseCustomWildPower('EVERYONE_PLUS_FOUR');
+      else if (phase === 'CHOOSING_WILD_COLOR') await o.chooseWildColor(bestColor(o.getLocalPrivateHand()));
+      else if (phase === 'CHOOSING_SWAP_TARGET') await o.chooseSwapTarget(h.getRoom()!.players.find(p => p.id !== owner && p.status === 'ACTIVE')!.id);
+      else if (phase === 'CHOOSING_ROULETTE_COLOR') await o.chooseRouletteColor(bestColor(o.getLocalPrivateHand()));
+      else throw new Error('unhandled phase ' + phase);
+    } else await takeTurn(byId[cur]);
+    await waitFor(() => h.getRevision() !== rev || log.host.some(e => e.type === 'MATCH_FINISHED'), 3000, 'turn').catch(() => {});
+    await sleep(3);
+  }
+  const fin = log.host.find(e => e.type === 'MATCH_FINISHED');
+  assert.ok(fin, 'match finished');
+  assert.strictEqual(fin.finishingOrder.length, 3, 'all three ranked');
+  assert.strictEqual(new Set(fin.finishingOrder).size, 3);
+  assert.strictEqual(fin.winnerId, fin.finishingOrder[0], 'first to empty is the winner');
+  await waitFor(() => log.alice.some(e => e.type === 'MATCH_FINISHED') && log.bob.some(e => e.type === 'MATCH_FINISHED'), 5000, 'broadcast');
+  for (const s of [h, a, b]) await s.leaveRoom();
 }]);
 
 (async () => {
